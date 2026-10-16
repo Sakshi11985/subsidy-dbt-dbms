@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Scheme, Citizen, LandParcel, LandOwnership, SchemeApplication, Language } from '../types';
-import { X, CheckCircle, AlertCircle, ShieldCheck, MapPin, Building, CreditCard } from 'lucide-react';
+import { Scheme, Citizen, LandParcel, LandOwnership, Language, EligibilityResult } from '../types';
+import { X, CheckCircle, AlertCircle, ShieldCheck, MapPin, Loader2 } from 'lucide-react';
+import { api, ApiError } from '../api';
 
 interface ApplyModalProps {
   scheme: Scheme | null;
@@ -9,8 +10,8 @@ interface ApplyModalProps {
   citizens: Citizen[];
   parcels: LandParcel[];
   ownerships: LandOwnership[];
-  applications: SchemeApplication[];
-  onSubmitApplication: (app: SchemeApplication) => void;
+  defaultCitizenId?: string;
+  onSubmitted: (applicationId: string, citizenId: string) => void;
   language: Language;
 }
 
@@ -21,117 +22,57 @@ export const ApplyModal: React.FC<ApplyModalProps> = ({
   citizens,
   parcels,
   ownerships,
-  applications,
-  onSubmitApplication,
+  defaultCitizenId,
+  onSubmitted,
   language,
 }) => {
+  // hooks must run on every render (before any early return)
+  const [selectedCitizenId, setSelectedCitizenId] = useState<string>(defaultCitizenId || citizens[0]?.citizen_id || '');
+  const ownedParcelIds = (cid: string) => ownerships.filter(o => o.citizen_id === cid).map(o => o.parcel_id);
+  const [selectedParcelId, setSelectedParcelId] = useState<string>(ownedParcelIds(defaultCitizenId || citizens[0]?.citizen_id || '')[0] || '');
+  const [evaluationResult, setEvaluationResult] = useState<(EligibilityResult & { tested: boolean }) | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
   if (!isOpen || !scheme) return null;
 
   const isHi = language === 'hi';
-  const [selectedCitizenId, setSelectedCitizenId] = useState<string>(citizens[0]?.citizen_id || '');
-  const [selectedParcelId, setSelectedParcelId] = useState<string>(parcels[0]?.parcel_id || '');
-  const [evaluationResult, setEvaluationResult] = useState<{
-    tested: boolean;
-    eligible: boolean;
-    message: string;
-  } | null>(null);
-
+  const cycleYear = new Date().getFullYear();
   const selectedCitizen = citizens.find(c => c.citizen_id === selectedCitizenId);
-  const selectedParcel = parcels.find(p => p.parcel_id === selectedParcelId);
+  const citizenParcels = parcels.filter(p => ownedParcelIds(selectedCitizenId).includes(p.parcel_id));
+  const selectedParcel = citizenParcels.find(p => p.parcel_id === selectedParcelId);
   const ownership = ownerships.find(o => o.citizen_id === selectedCitizenId && o.parcel_id === selectedParcelId);
 
-  // Simulate Stored Procedure `check_citizen_eligibility(citizen_id, scheme_id, parcel_id)`
-  const runEligibilityEvaluation = () => {
+  // Calls the real stored procedure check_citizen_eligibility(citizen_id, scheme_id, parcel_id)
+  const runEligibilityEvaluation = async () => {
     if (!selectedCitizen || !selectedParcel) return;
-
-    // Check duplicate application in current cycle year (Fix ③)
-    const existingApp = applications.find(
-      a => a.citizen_id === selectedCitizenId && a.scheme_id === scheme.scheme_id && a.cycle_year === 2026
-    );
-
-    if (existingApp) {
-      setEvaluationResult({
-        tested: true,
-        eligible: false,
-        message: `Blocked by UNIQUE(citizen_id, scheme_id, cycle_year): Citizen ${selectedCitizen.full_name} already has an active application (${existingApp.application_id}) for cycle 2026.`,
-      });
-      return;
+    setLoading(true);
+    setSubmitError(null);
+    try {
+      const q = new URLSearchParams({ citizen_id: selectedCitizenId, scheme_id: scheme.scheme_id, parcel_id: selectedParcelId, cycle_year: String(cycleYear) });
+      const r = await api<EligibilityResult>(`/eligibility?${q}`);
+      setEvaluationResult({ ...r, tested: true });
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
     }
-
-    const claimedArea = ownership ? ownership.claimed_area_acres : selectedParcel.area_acres;
-
-    for (const rule of scheme.rules) {
-      if (rule.attribute === 'annual_income') {
-        const ceiling = parseFloat(rule.target_value);
-        if (rule.operator === '<=' && selectedCitizen.annual_income > ceiling) {
-          setEvaluationResult({
-            tested: true,
-            eligible: false,
-            message: `Rule Failure on [annual_income]: Citizen income ₹${selectedCitizen.annual_income.toLocaleString()} exceeds scheme limit ₹${ceiling.toLocaleString()}. (Generic rule evaluated from EligibilityRules table).`,
-          });
-          return;
-        }
-      }
-      if (rule.attribute === 'land_area') {
-        const limit = parseFloat(rule.target_value);
-        if (rule.operator === '<=' && claimedArea > limit) {
-          setEvaluationResult({
-            tested: true,
-            eligible: false,
-            message: `Rule Failure on [land_area]: Claimed land holding ${claimedArea} acres exceeds ceiling of ${limit} acres.`,
-          });
-          return;
-        }
-        if (rule.operator === '>=' && claimedArea < limit) {
-          setEvaluationResult({
-            tested: true,
-            eligible: false,
-            message: `Rule Failure on [land_area]: Claimed land holding ${claimedArea} acres is below required minimum of ${limit} acres.`,
-          });
-          return;
-        }
-      }
-    }
-
-    setEvaluationResult({
-      tested: true,
-      eligible: true,
-      message: `Eligibility PASSED! Procedure check_citizen_eligibility() verified income ₹${selectedCitizen.annual_income.toLocaleString()} and land parcel area (${claimedArea} ac) satisfy all scheme rules.`,
-    });
   };
 
-  const handleFinalSubmit = () => {
+  const handleFinalSubmit = async () => {
     if (!selectedCitizen || !selectedParcel || !evaluationResult?.eligible) return;
-
-    const newApp: SchemeApplication = {
-      application_id: `APP-2026-${Math.floor(100 + Math.random() * 900)}`,
-      citizen_id: selectedCitizen.citizen_id,
-      citizen_name: selectedCitizen.full_name,
-      scheme_id: scheme.scheme_id,
-      scheme_title: scheme.title_en,
-      cycle_year: 2026,
-      parcel_id: selectedParcel.parcel_id,
-      parcel_key: `${selectedParcel.state}/${selectedParcel.district}/${selectedParcel.taluk}/${selectedParcel.village}/${selectedParcel.survey_no}/${selectedParcel.subdivision}`,
-      status: 'submitted',
-      applied_at: new Date().toISOString().replace('T', ' ').slice(0, 16),
-      documents: [
-        {
-          doc_type: 'AADHAAR',
-          doc_name: 'Aadhaar_HMAC_Verified.pdf',
-          hmac_signature: selectedCitizen.aadhaar_hmac,
-          verified: false,
-        },
-        {
-          doc_type: 'LAND_KHASRA',
-          doc_name: `Parcel_${selectedParcel.survey_no}_${selectedParcel.subdivision}.pdf`,
-          hmac_signature: `hmac_${Math.random().toString(36).substring(2, 14)}`,
-          verified: false,
-        },
-      ],
-    };
-
-    onSubmitApplication(newApp);
-    onClose();
+    setLoading(true);
+    setSubmitError(null);
+    try {
+      const r = await api<{ application: { application_id: string }; warning?: string }>('/applications', {
+        citizen_id: selectedCitizenId, scheme_id: scheme.scheme_id, parcel_id: selectedParcelId, cycle_year: cycleYear,
+      });
+      onSubmitted(r.application.application_id, selectedCitizenId);
+    } catch (err) {
+      setSubmitError(err instanceof ApiError && err.blocked ? `Blocked by ${err.blocked.mechanism}: ${err.message}` : String((err as Error).message));
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -172,13 +113,14 @@ export const ApplyModal: React.FC<ApplyModalProps> = ({
               value={selectedCitizenId}
               onChange={(e) => {
                 setSelectedCitizenId(e.target.value);
+                setSelectedParcelId(ownedParcelIds(e.target.value)[0] || '');
                 setEvaluationResult(null);
               }}
               className="w-full text-sm p-3 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-600 focus:outline-none"
             >
               {citizens.map((c) => (
                 <option key={c.citizen_id} value={c.citizen_id}>
-                  {c.full_name} ({c.citizen_id}) — Income: ₹{c.annual_income.toLocaleString()} | {c.state}
+                  {c.full_name} ({c.citizen_id}) — Income: ₹{c.annual_income.toLocaleString('en-IN')} | {c.state}{c.is_frozen ? ' [FROZEN]' : ''}
                 </option>
               ))}
             </select>
@@ -200,7 +142,7 @@ export const ApplyModal: React.FC<ApplyModalProps> = ({
           {/* Land Parcel Selector */}
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-              2. Select Agricultural Land Parcel (3NF Normalized LandParcels Table)
+              2. Select a Land Parcel this citizen owns a share of (LandOwnership)
             </label>
             <select
               value={selectedParcelId}
@@ -210,7 +152,8 @@ export const ApplyModal: React.FC<ApplyModalProps> = ({
               }}
               className="w-full text-sm p-3 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-600 focus:outline-none"
             >
-              {parcels.map((p) => (
+              {citizenParcels.length === 0 && <option value="">No recorded land ownership for this citizen</option>}
+              {citizenParcels.map((p) => (
                 <option key={p.parcel_id} value={p.parcel_id}>
                   {p.state} - {p.district} ({p.village}), Survey #{p.survey_no}/{p.subdivision} ({p.area_acres} Acres)
                 </option>
@@ -229,7 +172,7 @@ export const ApplyModal: React.FC<ApplyModalProps> = ({
                 <div className="mt-1.5 flex items-center gap-4 text-xs">
                   <span>Total Area: <strong>{selectedParcel.area_acres} ac</strong></span>
                   <span>
-                    Claimed Share: <strong>{ownership ? `${(ownership.share_fraction * 100).toFixed(0)}% (${ownership.claimed_area_acres} ac)` : '100%'}</strong>
+                    Claimed Share: <strong>{ownership ? `${(ownership.share_fraction * 100).toFixed(0)}% (${ownership.claimed_area_acres} ac)` : 'none'}</strong>
                   </span>
                 </div>
               </div>
@@ -241,9 +184,11 @@ export const ApplyModal: React.FC<ApplyModalProps> = ({
             <button
               type="button"
               onClick={runEligibilityEvaluation}
-              className="w-full py-3 bg-slate-900 hover:bg-black text-amber-300 font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer font-mono"
+              disabled={loading || !selectedParcel}
+              className="w-full py-3 bg-slate-900 hover:bg-black text-amber-300 font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer font-mono disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span>EXECUTE check_citizen_eligibility()</span>
+              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+              <span>EXECUTE check_citizen_eligibility('{selectedCitizenId}', '{scheme.scheme_id}', '{selectedParcelId || '…'}')</span>
             </button>
           </div>
 
@@ -267,9 +212,26 @@ export const ApplyModal: React.FC<ApplyModalProps> = ({
                     {evaluationResult.eligible ? 'Eligibility Validation Passed' : 'Database Integrity Rule Blocked'}
                   </h4>
                   <p className="mt-1 font-mono text-[11px]">{evaluationResult.message}</p>
+                  {evaluationResult.rules.length > 0 && (
+                    <table className="mt-3 w-full text-[11px] font-mono">
+                      <tbody>
+                        {evaluationResult.rules.map((r) => (
+                          <tr key={r.rule_id} className="align-top">
+                            <td className="pr-2 py-0.5">{r.passed ? '✓' : '✗'}</td>
+                            <td className="pr-2 py-0.5 font-bold whitespace-nowrap">{r.rule_id}</td>
+                            <td className="py-0.5">{r.message}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               </div>
             </div>
+          )}
+
+          {submitError && (
+            <div className="p-3 rounded-xl border border-rose-300 bg-rose-50 text-rose-900 text-xs font-mono">{submitError}</div>
           )}
 
         </div>
@@ -283,7 +245,7 @@ export const ApplyModal: React.FC<ApplyModalProps> = ({
             Cancel
           </button>
           <button
-            disabled={!evaluationResult?.eligible}
+            disabled={!evaluationResult?.eligible || loading}
             onClick={handleFinalSubmit}
             className={`px-5 py-2.5 rounded-xl font-bold text-xs text-white shadow-md transition flex items-center gap-2 ${
               evaluationResult?.eligible

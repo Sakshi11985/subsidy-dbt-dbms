@@ -1,0 +1,25 @@
+{
+  "name": "subsidy-dbt-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API for the subsidy eligibility + disbursal tracking system (PostgreSQL + MongoDB)",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node scripts/seed.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "benchmark": "node scripts/benchmark.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3",
+    "mongodb": "^6.21.0",
+    "pg": "^8.23.1"
+  }
+}

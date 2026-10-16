@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
-import { SchemeApplication, Language } from '../types';
+import { SchemeApplication, Language, Officer } from '../types';
 import { CheckCircle2, XCircle, Search, ShieldAlert, FileCheck, ArrowRight, Lock, Eye } from 'lucide-react';
 
 interface VerificationDeskProps {
   applications: SchemeApplication[];
-  onUpdateStatus: (appId: string, newStatus: SchemeApplication['status'], verifierId: string, notes?: string) => void;
+  officers: Officer[];
+  onUpdateStatus: (appId: string, newStatus: SchemeApplication['status'], verifierId: string, notes?: string) => Promise<unknown>;
   language: Language;
 }
 
 export const VerificationDesk: React.FC<VerificationDeskProps> = ({
   applications,
+  officers,
   onUpdateStatus,
   language,
 }) => {
@@ -45,17 +47,23 @@ export const VerificationDesk: React.FC<VerificationDeskProps> = ({
             </p>
           </div>
 
-          <div className="bg-white/10 backdrop-blur-md p-4 rounded-2xl border border-white/20 text-xs shrink-0 space-y-2">
+          <div className="bg-white/10 backdrop-blur-md p-4 rounded-2xl border border-white/20 text-xs shrink-0 space-y-2 min-w-0 max-w-full">
             <span className="text-emerald-200 block font-semibold">Active Verifier Identity:</span>
             <div className="flex items-center gap-2">
-              <input
-                type="text"
+              <select
                 value={officerId}
                 onChange={(e) => setOfficerId(e.target.value)}
-                className="bg-black/40 border border-emerald-400/50 rounded-lg px-2.5 py-1 text-white font-mono text-xs focus:outline-none"
-              />
+                className="min-w-0 max-w-[220px] sm:max-w-none bg-black/40 border border-emerald-400/50 rounded-lg px-2.5 py-1 text-white font-mono text-xs focus:outline-none"
+              >
+                {officers.map((o) => (
+                  <option key={o.officer_id} value={o.officer_id} className="text-slate-900">
+                    {o.officer_id} · {o.designation}{o.can_verify ? '' : ' (cannot verify)'}
+                  </option>
+                ))}
+              </select>
               <span className="text-[10px] text-emerald-300 uppercase font-bold">Logged In</span>
             </div>
+            <p className="text-[10px] text-emerald-200/80 max-w-[260px]">Officers without <code>can_verify</code> are refused by the database, not hidden by the UI.</p>
           </div>
         </div>
 
@@ -154,17 +162,21 @@ export const VerificationDesk: React.FC<VerificationDeskProps> = ({
 
                   <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200">
                     <span className="font-bold text-slate-700 block mb-1">
-                      Document HMAC Signatures (Fix ⑤ & ⑥):
+                      Proof Documents from MongoDB (Fix ⑤ & ⑥):
                     </span>
                     <div className="space-y-1.5">
+                      {app.documents_missing && <p className="text-rose-600">No document set in MongoDB for this application.</p>}
                       {app.documents.map((doc, idx) => (
-                        <div key={idx} className="bg-white p-2 rounded border border-slate-200 flex items-center justify-between">
-                          <div>
+                        <div key={idx} className={`bg-white p-2 rounded border flex items-center justify-between ${doc.mismatch ? 'border-rose-400 bg-rose-50' : 'border-slate-200'}`}>
+                          <div className="min-w-0">
                             <span className="font-bold text-slate-800">{doc.doc_type}: </span>
                             <span className="text-slate-600">{doc.doc_name}</span>
-                            <p className="font-mono text-[10px] text-slate-400 truncate max-w-[220px]">
-                              HMAC: {doc.hmac_signature}
+                            <p className="font-mono text-[10px] text-slate-400 truncate max-w-[260px]" title={doc.hmac_signature}>
+                              {doc.doc_type === 'AADHAAR' ? 'Extracted Aadhaar HMAC' : 'Extracted ID'}: {doc.hmac_signature}
                             </p>
+                            {doc.mismatch && (
+                              <p className="text-[10px] font-bold text-rose-700">⚠ This Aadhaar belongs to a different registered citizen</p>
+                            )}
                           </div>
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
                             doc.verified ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
@@ -209,7 +221,7 @@ export const VerificationDesk: React.FC<VerificationDeskProps> = ({
                       </button>
                     )}
 
-                    {app.status !== 'verified' && app.status !== 'approved' && app.status !== 'paid' && (
+                    {(app.status === 'submitted' || app.status === 'under_review') && (
                       <button
                         onClick={() => {
                           const reason = prompt("Enter Rejection Reason for Application:", "Land survey discrepancy / forged deed");

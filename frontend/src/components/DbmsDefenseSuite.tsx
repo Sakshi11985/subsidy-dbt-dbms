@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { POSTGRES_DDL, MONGO_SCHEMA } from '../data/sqlDdl';
 import { Database, ShieldCheck, Copy, Check, BookOpen, Cpu, Layers, HelpCircle, ArrowRight } from 'lucide-react';
 import { Language } from '../types';
+import bench from '../../../docs/benchmark-results.json';
 
 interface DbmsDefenseSuiteProps {
   language: Language;
@@ -52,14 +53,14 @@ export const DbmsDefenseSuite: React.FC<DbmsDefenseSuiteProps> = ({ language }) 
       gap: 'Plain 12-digit Aadhaar hash reversible by brute force',
       impact: '10^12 combinations can be brute-forced with rainbow tables in hours.',
       fix: 'Keyed HMAC-SHA256 with pgcrypto or server secret, plus masked display (XXXX-XXXX-1234).',
-      sql: 'aadhaar_hmac VARCHAR(64) NOT NULL UNIQUE, aadhaar_masked VARCHAR(20)',
+      sql: "aadhaar_hmac CHAR(64) NOT NULL (UNIQUE uq_citizen_aadhaar); key held by the API, never in the DB",
     },
     {
       num: '⑥',
       gap: 'Grouping by file hash misses rescans',
       impact: 'Scanning same document twice produces different SHA256 file hashes.',
       fix: 'Group by extracted identifiers (HMAC, parcel composite key) in metadata, not raw file bytes.',
-      sql: 'MongoDB aggregation pipeline grouping on documents.hmac_signature',
+      sql: "$group: { _id: '$documents.extracted.aadhaar_hmac', citizens: { $addToSet: '$citizen_id' } }",
     },
     {
       num: '⑦',
@@ -79,15 +80,15 @@ export const DbmsDefenseSuite: React.FC<DbmsDefenseSuiteProps> = ({ language }) 
       num: '⑨',
       gap: 'Real banking transfers cannot sit in DB transaction',
       impact: 'External PFMS money transfer cannot be rolled back by SQL COMMIT.',
-      fix: 'State pipeline approved -> payment_initiated -> paid with idempotent txn_ref and append-only ledger.',
-      sql: 'txn_ref VARCHAR(100) UNIQUE + trg_disbursal_immutable trigger',
+      fix: 'Two short transactions around the bank call: initiate_payment() (approved -> payment_initiated, PaymentAttempts row) then complete_payment() (ledger row, paid / partially_paid, or back to approved on failure). Idempotent on txn_ref.',
+      sql: 'initiate_payment(app, officer) + complete_payment(txn_ref, ok) + trg_disbursal_immutable',
     },
     {
       num: '⑩',
       gap: 'Defending MongoDB vs PostgreSQL JSONB',
       impact: 'Examiner asks: "Postgres has JSONB, why MongoDB?"',
       fix: 'MongoDB justified by per-scheme $jsonSchema validation, document-centric OCR payload access, and aggregation pipeline.',
-      sql: 'db.createCollection("verification_documents", { validator: { $jsonSchema: ... } })',
+      sql: 'db.createCollection("document_uploads", { validator: { $jsonSchema: ... } })',
     },
   ];
 
@@ -230,9 +231,9 @@ export const DbmsDefenseSuite: React.FC<DbmsDefenseSuiteProps> = ({ language }) 
                   </p>
                   <ul className="list-disc pl-4 space-y-1 text-xs text-slate-700">
                     <li><strong>Defense-in-Depth against Application Bugs:</strong> A developer might write an asynchronous retry worker or background job that forgets to call <code>SELECT ... FOR UPDATE</code>.</li>
-                    <li><strong>Database-Enforced Invariant:</strong> Application code is mutable and prone to regressions; schema constraints in SQL DDL are declarative and mathematically immutable.</li>
-                    <li><strong>Crash & Network Faults:</strong> If an external timeout occurs between locking and insertion, the UNIQUE constraint guarantees that no secondary insert can ever succeed.</li>
-                    <li><strong>Examiner Conclusion:</strong> The lock provides <em>clean concurrency waits</em> without throwing errors to users, while the UNIQUE constraint provides <em>absolute data integrity</em>. Both layers are essential!</li>
+                    <li><strong>Database-Enforced Invariant:</strong> A lock only protects code paths that remember to take it. A constraint is declared once in the schema and holds for every writer: the API, a bulk import, a psql session.</li>
+                    <li><strong>Measured, not assumed:</strong> the Race Condition Lab's "No row lock" mode removes FOR UPDATE and still ends with exactly one ledger row (the losers get unique_violation); "No lock, no UNIQUE" writes one row per worker.</li>
+                    <li><strong>Conclusion:</strong> the lock gives clean, ordered waits and a clear "not payable" answer; the UNIQUE constraint is the backstop that keeps the invariant even when some code path skips the lock.</li>
                   </ul>
                 </div>
               </div>
@@ -240,20 +241,24 @@ export const DbmsDefenseSuite: React.FC<DbmsDefenseSuiteProps> = ({ language }) 
               {/* Code snippet illustrating the transaction */}
               <div className="mt-4 p-4 rounded-2xl bg-slate-900 text-emerald-400 font-mono text-xs overflow-x-auto">
                 <span className="text-slate-400 block mb-2 font-bold">// THE SECURE TRANSACTION PATTERN:</span>
-                {`BEGIN;
--- 1. Acquire row-level lock (Officer 2 blocks here until Officer 1 commits)
-SELECT application_id, status FROM Applications 
-WHERE application_id = 'APP-2026-002' AND status = 'approved' 
-FOR UPDATE;
+                {`-- initiate_payment(p_application_id, p_officer)   (database/schema.sql)
+BEGIN;
+SELECT * FROM Applications
+ WHERE application_id = 'APP-2026-0002' AND status = 'approved'
+   FOR UPDATE;                 -- officer 2 blocks here; afterwards READ COMMITTED
+                               -- re-checks the WHERE on the new row version -> 0 rows
+-- 0 rows  -> RAISE 'NOT_PAYABLE'
+UPDATE Applications SET status = 'payment_initiated' WHERE application_id = 'APP-2026-0002';
+INSERT INTO PaymentAttempts (application_id, instalment_no, amount, txn_ref, initiated_by)
+VALUES ('APP-2026-0002', 1, 2000, 'PFMS/2026/APP-2026-0002/I1', 'OFFICER_APPROVER_02');
+COMMIT;
 
--- 2. If 0 rows returned (because previous officer just paid it), rollback & exit!
--- 3. Update status to payment_initiated
-UPDATE Applications SET status = 'payment_initiated' WHERE application_id = 'APP-2026-002';
+-- ... call the bank (PFMS) with the idempotent txn_ref, OUTSIDE any transaction ...
 
--- 4. Insert into immutable ledger (Protected by UNIQUE(application_id, instalment_no))
-INSERT INTO Disbursals (application_id, instalment_no, amount, bank_ifsc, bank_account_no, txn_ref, disbursed_by)
-VALUES ('APP-2026-002', 1, 2000.00, 'SBIN0004123', '30498172635', 'PFMS/2026/09/8812904123', 'FIN_OFFICER_01');
-
+-- complete_payment('PFMS/2026/APP-2026-0002/I1', true)
+BEGIN;
+INSERT INTO Disbursals (... instalment_no = 1 ...);   -- UNIQUE(application_id, instalment_no)
+UPDATE Applications SET status = 'partially_paid';    -- or 'paid' on the last instalment
 COMMIT;`}
               </div>
             </div>
@@ -379,7 +384,9 @@ COMMIT;`}
                 <span>EXPLAIN ANALYZE Performance Benchmarks (Item 3.D in Problem Statement)</span>
               </h3>
               <p className="text-xs text-slate-500">
-                Evaluation conducted across 10,000 synthetic farmer records with intentional fraud injections.
+                Measured by <code>npm run benchmark</code> (backend/scripts/benchmark.js) on {bench.dataset.citizens.toLocaleString()} synthetic citizens,{' '}
+                {bench.dataset.applications.toLocaleString()} applications · PostgreSQL {bench.environment.postgres} · median of {bench.environment.explain_runs_per_query} runs.
+                "Seq scan" forces the planner off indexes with <code>SET enable_indexscan/bitmapscan = off</code>. Re-run it on your machine to refresh these numbers.
               </p>
             </div>
 
@@ -387,46 +394,61 @@ COMMIT;`}
               <table className="w-full text-xs text-left border-collapse">
                 <thead>
                   <tr className="bg-slate-100 border-y border-slate-200 text-slate-700 uppercase font-bold tracking-wider text-[11px]">
-                    <th className="p-3">Query Tested</th>
-                    <th className="p-3">Index Used</th>
-                    <th className="p-3">Seq Scan (No Index)</th>
-                    <th className="p-3">Index Scan (Optimized)</th>
-                    <th className="p-3">Speedup Factor</th>
+                    <th className="p-3">Query</th>
+                    <th className="p-3">Index</th>
+                    <th className="p-3">Seq scan</th>
+                    <th className="p-3">With index</th>
+                    <th className="p-3">Speed-up</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-mono">
-                  <tr className="hover:bg-slate-50">
-                    <td className="p-3 font-bold text-slate-900 font-sans">
-                      Duplicate Bank Account Scan <br />
-                      <span className="text-[10px] text-slate-500">GROUP BY bank_ifsc, bank_account_no HAVING count(*) &gt; 1</span>
-                    </td>
-                    <td className="p-3 text-emerald-700">uq_bank_account (B-Tree Composite)</td>
-                    <td className="p-3 text-rose-600 font-bold">42.8 ms</td>
-                    <td className="p-3 text-emerald-600 font-bold">1.2 ms</td>
-                    <td className="p-3 text-slate-800 font-bold bg-emerald-50">35.6x faster</td>
-                  </tr>
-                  <tr className="hover:bg-slate-50">
-                    <td className="p-3 font-bold text-slate-900 font-sans">
-                      Fuzzy Name Match <br />
-                      <span className="text-[10px] text-slate-500">similarity(full_name, 'Ramesh Kumar') &gt; 0.85</span>
-                    </td>
-                    <td className="p-3 text-emerald-700">idx_citizens_name_trgm (GIN pg_trgm)</td>
-                    <td className="p-3 text-rose-600 font-bold">118.4 ms</td>
-                    <td className="p-3 text-emerald-600 font-bold">3.4 ms</td>
-                    <td className="p-3 text-slate-800 font-bold bg-emerald-50">34.8x faster</td>
-                  </tr>
-                  <tr className="hover:bg-slate-50">
-                    <td className="p-3 font-bold text-slate-900 font-sans">
-                      Land Parcel Share Aggregation <br />
-                      <span className="text-[10px] text-slate-500">SUM(share_fraction) on composite parcel_id</span>
-                    </td>
-                    <td className="p-3 text-emerald-700">uq_parcel_citizen (Composite B-Tree)</td>
-                    <td className="p-3 text-rose-600 font-bold">29.1 ms</td>
-                    <td className="p-3 text-emerald-600 font-bold">0.8 ms</td>
-                    <td className="p-3 text-slate-800 font-bold bg-emerald-50">36.3x faster</td>
-                  </tr>
+                  {bench.indexes.map((r) => (
+                    <tr key={r.query} className="hover:bg-slate-50 align-top">
+                      <td className="p-3 font-bold text-slate-900 font-sans">
+                        {r.query}<br />
+                        <span className="text-[10px] text-slate-500 font-mono font-normal">{r.sql}</span><br />
+                        <span className="text-[10px] text-emerald-700 font-mono font-normal">plan: {r.index_plan}</span>
+                      </td>
+                      <td className="p-3 text-emerald-700">{r.index}</td>
+                      <td className="p-3 text-rose-600 font-bold">{r.seq_scan_ms} ms</td>
+                      <td className="p-3 text-emerald-600 font-bold">{r.index_ms} ms</td>
+                      <td className={`p-3 font-bold ${r.speedup >= 2 ? 'text-slate-800 bg-emerald-50' : 'text-amber-800 bg-amber-50'}`}>
+                        {r.speedup}×{r.speedup < 2 ? ' (no gain: low-selectivity predicate)' : ''}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50 text-xs">
+                <h4 className="font-bold text-slate-900 mb-2">Planted fraud vs caught</h4>
+                <table className="w-full font-mono text-[11px]">
+                  <tbody>
+                    <tr><td className="py-1">Duplicate bank account</td><td className="text-right">{bench.detection.caught.dup_bank} / {bench.detection.planted.dup_bank}</td></tr>
+                    <tr><td className="py-1">Aadhaar reuse</td><td className="text-right">{bench.detection.caught.aadhaar_reuse} / {bench.detection.planted.aadhaar_reuse}</td></tr>
+                    <tr><td className="py-1">Parcel over-allocation</td><td className="text-right">{bench.detection.caught.overallocation} / {bench.detection.planted.overallocation}</td></tr>
+                    <tr><td className="py-1">Similar-name review flags on {bench.detection.legit_registrations_with_common_names} legitimate sign-ups</td><td className="text-right">{bench.detection.medium_fuzzy_flags_raised_on_them}</td></tr>
+                  </tbody>
+                </table>
+                <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">{bench.detection.note}</p>
+              </div>
+              <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50 text-xs">
+                <h4 className="font-bold text-slate-900 mb-2">Concurrency: ledger rows per trial (5 trials each)</h4>
+                <table className="w-full font-mono text-[11px]">
+                  <thead><tr className="text-slate-500"><th className="text-left">mode</th><th className="text-right">workers</th><th className="text-right">rows</th><th className="text-right">duplicates</th></tr></thead>
+                  <tbody>
+                    {bench.concurrency.map((r) => (
+                      <tr key={`${r.mode}-${r.workers}`}>
+                        <td className="py-0.5">{r.mode}</td><td className="text-right">{r.workers}</td>
+                        <td className="text-right">{r.ledger_rows_per_trial.join(',')}</td>
+                        <td className={`text-right font-bold ${r.duplicate_payouts_total ? 'text-rose-700' : 'text-emerald-700'}`}>{r.duplicate_payouts_total}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

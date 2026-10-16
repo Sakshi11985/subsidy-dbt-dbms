@@ -8,5 +8,16 @@ export default defineConfig({
     tailwindcss(),
     react(),
   ],
+  server: {
+    // the DBMS viewer tab imports ../database/schema.sql directly
+    fs: { allow: ['..'] },
+    proxy: {
+      '/api': { target: process.env.API_URL || 'http://localhost:4000', changeOrigin: true },
+    },
+  },
+  preview: {
+    proxy: {
+      '/api': { target: process.env.API_URL || 'http://localhost:4000', changeOrigin: true },
+    },
+  },
 })
-

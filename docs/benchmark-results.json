@@ -1,0 +1,281 @@
+{
+  "generated_at": "2026-10-16T06:54:38.385Z",
+  "environment": {
+    "postgres": "16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)",
+    "node": "v22.22.0",
+    "mongo": "connected",
+    "explain_runs_per_query": 7
+  },
+  "dataset": {
+    "citizens": 50006,
+    "parcels": 50005,
+    "ownerships": 50007,
+    "applications": 33344
+  },
+  "detection": {
+    "planted": {
+      "dup_bank": 30,
+      "aadhaar_reuse": 20,
+      "overallocation": 50
+    },
+    "caught": {
+      "dup_bank": 30,
+      "aadhaar_reuse": 20,
+      "overallocation": 50
+    },
+    "legit_registrations_with_common_names": 200,
+    "medium_fuzzy_flags_raised_on_them": 103,
+    "note": "MEDIUM fuzzy-name flags are review prompts, not blocks. The synthetic data uses only 20x20x15 name combinations, so most new names closely match an existing farmer in the same district; that makes this a pessimistic (high) rate, but common names are also frequent in real villages, which is exactly why name similarity alone must not block a registration.",
+    "flags_total_after": 203
+  },
+  "indexes": [
+    {
+      "query": "Duplicate-account lookup (what the screening trigger runs)",
+      "index": "uq_bank_account (B-tree, composite)",
+      "sql": "SELECT citizen_id FROM Citizens WHERE bank_ifsc = $1 AND bank_account_no = $2",
+      "seq_scan_ms": 3.878,
+      "seq_plan": "Seq Scan",
+      "index_ms": 0.026,
+      "index_plan": "Index Scan (uq_bank_account)",
+      "speedup": 149.2
+    },
+    {
+      "query": "Aadhaar reuse lookup",
+      "index": "uq_citizen_aadhaar (B-tree)",
+      "sql": "SELECT citizen_id FROM Citizens WHERE aadhaar_hmac = $1",
+      "seq_scan_ms": 2.792,
+      "seq_plan": "Seq Scan",
+      "index_ms": 0.014,
+      "index_plan": "Index Scan (uq_citizen_aadhaar)",
+      "speedup": 199.4
+    },
+    {
+      "query": "Fuzzy name match in a district (pg_trgm %)",
+      "index": "idx_citizens_name_trgm (GIN, gin_trgm_ops)",
+      "sql": "SELECT citizen_id FROM Citizens WHERE full_name % $1 AND district = $2",
+      "seq_scan_ms": 113.303,
+      "seq_plan": "Seq Scan",
+      "index_ms": 6.393,
+      "index_plan": "Bitmap Heap Scan → BitmapAnd → Bitmap Index Scan (idx_citizens_name_trgm) → Bitmap Index Scan (idx_citizens_district)",
+      "speedup": 17.7
+    },
+    {
+      "query": "Parcel share total (ghost-beneficiary trigger)",
+      "index": "uq_parcel_citizen (B-tree, parcel_id leading)",
+      "sql": "SELECT SUM(share_fraction) FROM LandOwnership WHERE parcel_id = $1",
+      "seq_scan_ms": 2.118,
+      "seq_plan": "Aggregate → Seq Scan",
+      "index_ms": 0.025,
+      "index_plan": "Aggregate → Index Scan (uq_parcel_citizen)",
+      "speedup": 84.7
+    },
+    {
+      "query": "Verifier queue: status = 'verified'",
+      "index": "idx_app_status (B-tree)",
+      "sql": "SELECT application_id FROM Applications WHERE status = 'verified' LIMIT 50",
+      "seq_scan_ms": 0.02,
+      "seq_plan": "Limit → Seq Scan",
+      "index_ms": 0.024,
+      "index_plan": "Limit → Seq Scan",
+      "speedup": 0.8
+    }
+  ],
+  "concurrency": [
+    {
+      "mode": "safe",
+      "workers": 5,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "duplicate_payouts_total": 0,
+      "refusals_by": {
+        "initiate_payment": 20
+      },
+      "median_elapsed_ms": 31
+    },
+    {
+      "mode": "safe",
+      "workers": 10,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "duplicate_payouts_total": 0,
+      "refusals_by": {
+        "initiate_payment": 45
+      },
+      "median_elapsed_ms": 42
+    },
+    {
+      "mode": "safe",
+      "workers": 20,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "duplicate_payouts_total": 0,
+      "refusals_by": {
+        "initiate_payment": 95
+      },
+      "median_elapsed_ms": 59
+    },
+    {
+      "mode": "safe",
+      "workers": 40,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "duplicate_payouts_total": 0,
+      "refusals_by": {
+        "initiate_payment": 195
+      },
+      "median_elapsed_ms": 54
+    },
+    {
+      "mode": "no_lock",
+      "workers": 5,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "duplicate_payouts_total": 0,
+      "refusals_by": {
+        "UNIQUE uq_application_instalment": 20
+      },
+      "median_elapsed_ms": 67
+    },
+    {
+      "mode": "no_lock",
+      "workers": 10,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "duplicate_payouts_total": 0,
+      "refusals_by": {
+        "UNIQUE uq_application_instalment": 45
+      },
+      "median_elapsed_ms": 66
+    },
+    {
+      "mode": "no_lock",
+      "workers": 20,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "duplicate_payouts_total": 0,
+      "refusals_by": {
+        "UNIQUE uq_application_instalment": 95
+      },
+      "median_elapsed_ms": 76
+    },
+    {
+      "mode": "no_lock",
+      "workers": 40,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "duplicate_payouts_total": 0,
+      "refusals_by": {
+        "UNIQUE uq_application_instalment": 195
+      },
+      "median_elapsed_ms": 101
+    },
+    {
+      "mode": "no_defence",
+      "workers": 5,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "duplicate_payouts_total": 20,
+      "refusals_by": {},
+      "median_elapsed_ms": 57
+    },
+    {
+      "mode": "no_defence",
+      "workers": 10,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        10,
+        10,
+        10,
+        10,
+        10
+      ],
+      "duplicate_payouts_total": 45,
+      "refusals_by": {},
+      "median_elapsed_ms": 59
+    },
+    {
+      "mode": "no_defence",
+      "workers": 20,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        20,
+        20,
+        20,
+        20,
+        20
+      ],
+      "duplicate_payouts_total": 95,
+      "refusals_by": {},
+      "median_elapsed_ms": 66
+    },
+    {
+      "mode": "no_defence",
+      "workers": 40,
+      "trials": 5,
+      "ledger_rows_per_trial": [
+        40,
+        40,
+        40,
+        40,
+        40
+      ],
+      "duplicate_payouts_total": 195,
+      "refusals_by": {},
+      "median_elapsed_ms": 71
+    }
+  ]
+}

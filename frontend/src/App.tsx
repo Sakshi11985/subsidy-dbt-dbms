@@ -1,25 +1,7 @@
-import React, { useState } from 'react';
-import { 
-  Citizen, 
-  LandParcel, 
-  LandOwnership, 
-  Scheme, 
-  SchemeApplication, 
-  Disbursal, 
-  FraudFlag, 
-  AuditLogEntry, 
-  Language 
-} from './types';
-import { 
-  INITIAL_CITIZENS, 
-  INITIAL_PARCELS, 
-  INITIAL_OWNERSHIP, 
-  SCHEMES, 
-  INITIAL_APPLICATIONS, 
-  INITIAL_DISBURSALS, 
-  INITIAL_FRAUD_FLAGS, 
-  INITIAL_AUDIT_LOGS 
-} from './data/mockData';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { DbState, FraudFlag, Language, RaceMode, RaceResult, Scheme, SchemeApplication } from './types';
+import { api, ApiError } from './api';
+import { toast } from './utils/toast';
 
 import { TopTicker } from './components/TopTicker';
 import { Header } from './components/Header';
@@ -31,324 +13,153 @@ import { DisbursalDesk } from './components/DisbursalDesk';
 import { FraudConsole } from './components/FraudConsole';
 import { DbmsDefenseSuite } from './components/DbmsDefenseSuite';
 import { ApplyModal } from './components/ApplyModal';
+import { RegisterModal } from './components/RegisterModal';
 import { Footer } from './components/Footer';
+import { Toaster } from './components/Toaster';
+
+export type ActionResult = { success: boolean; error?: string };
+
+/** Turn an API refusal into a toast naming the database mechanism that refused it. */
+function reportError(err: unknown, fallbackTitle = 'Request failed'): ActionResult {
+  if (err instanceof ApiError) {
+    const title = err.blocked ? `Blocked by ${err.blocked.mechanism}` : fallbackTitle;
+    toast.error(title, err.message);
+    return { success: false, error: err.message };
+  }
+  toast.error(fallbackTitle, String(err));
+  return { success: false, error: String(err) };
+}
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>('citizen');
   const [language, setLanguage] = useState<Language>('en');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Core Relational Tables State
-  const [citizens, setCitizens] = useState<Citizen[]>(INITIAL_CITIZENS);
-  const [parcels, setParcels] = useState<LandParcel[]>(INITIAL_PARCELS);
-  const [ownerships, setOwnerships] = useState<LandOwnership[]>(INITIAL_OWNERSHIP);
-  const [schemes, setSchemes] = useState<Scheme[]>(SCHEMES);
-  const [applications, setApplications] = useState<SchemeApplication[]>(INITIAL_APPLICATIONS);
-  const [disbursals, setDisbursals] = useState<Disbursal[]>(INITIAL_DISBURSALS);
-  const [fraudFlags, setFraudFlags] = useState<FraudFlag[]>(INITIAL_FRAUD_FLAGS);
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(INITIAL_AUDIT_LOGS);
+  const [db, setDb] = useState<DbState | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  // Modal State
   const [selectedSchemeForModal, setSelectedSchemeForModal] = useState<Scheme | null>(null);
   const [isApplyModalOpen, setIsApplyModalOpen] = useState<boolean>(false);
+  const [isRegisterOpen, setIsRegisterOpen] = useState<boolean>(false);
+  const [activeCitizenId, setActiveCitizenId] = useState<string>('CIT-1001');
 
-  // Active Citizen for Citizen Portal View
-  const activeCitizen = citizens[0]; // Rajendra Prasad Yadav
+  const refresh = useCallback(async () => {
+    try {
+      const state = await api<DbState>('/state');
+      setDb(state);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
 
-  // 1. Submit New Application
-  const handleSubmitApplication = (newApp: SchemeApplication) => {
-    setApplications(prev => [newApp, ...prev]);
+  useEffect(() => { refresh(); }, [refresh]);
 
-    // Insert into AuditLog
-    const auditEntry: AuditLogEntry = {
-      log_id: `AUD-${Date.now().toString().slice(-4)}`,
-      entity_name: 'Applications',
-      entity_id: newApp.application_id,
-      action: 'INSERT',
-      performed_by: newApp.citizen_id,
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      new_state: `status: submitted, scheme: ${newApp.scheme_id}, parcel: ${newApp.parcel_key}`,
-      status: 'SUCCESS',
-    };
-    setAuditLogs(prev => [auditEntry, ...prev]);
-    setCurrentTab('citizen');
+  /** Run a mutating API call, then reload state from the database. */
+  const run = useCallback(async <T,>(fn: () => Promise<T>, okTitle?: (r: T) => string | null, errTitle?: string) => {
+    setBusy(true);
+    try {
+      const r = await fn();
+      const msg = okTitle?.(r);
+      if (msg) toast.success(msg);
+      const warning = (r as { warning?: string } | null)?.warning;
+      if (warning) toast.info('Partial success', warning);
+      return { success: true, result: r } as ActionResult & { result: T };
+    } catch (err) {
+      return reportError(err, errTitle) as ActionResult & { result?: T };
+    } finally {
+      await refresh();
+      setBusy(false);
+    }
+  }, [refresh]);
+
+  // ---------------------------------------------------------- handlers
+  const handleUpdateStatus = (appId: string, newStatus: SchemeApplication['status'], officerId: string, notes?: string) =>
+    run(() => api(`/applications/${appId}/status`, { status: newStatus, officer_id: officerId, notes }),
+      () => `${appId} → ${newStatus}`);
+
+  const handleApproveApplication = (appId: string, approverId: string) =>
+    run(() => api(`/applications/${appId}/approve`, { officer_id: approverId }), () => `${appId} approved by ${approverId}`);
+
+  const handleReleaseNext = (appId: string, approverId: string) =>
+    run(() => api(`/applications/${appId}/release-next`, { officer_id: approverId }), () => `Next instalment of ${appId} released for payment`);
+
+  const handleDisbursePayment = (appId: string, disburserId: string, simulateBankFailure = false) =>
+    run(
+      () => api<{ disbursal_id: string | null; attempt: { instalment_no: number; amount: number; txn_ref: string } }>(
+        `/applications/${appId}/disburse`, { officer_id: disburserId, simulate_bank_failure: simulateBankFailure }),
+      (r) => (r.disbursal_id
+        ? `Paid instalment #${r.attempt.instalment_no} (₹${r.attempt.amount.toLocaleString('en-IN')}) · ${r.disbursal_id}`
+        : null),
+    ).then((res) => {
+      const r = (res as { result?: { disbursal_id: string | null; attempt: { txn_ref: string } } }).result;
+      if (res.success && r && !r.disbursal_id) toast.info('Bank rejected the transfer', `${r.attempt.txn_ref} marked FAILED; application returned to 'approved' so it can be retried.`);
+      return res;
+    });
+
+  const handleSimulateRaceCondition = async (appId: string, workers: number, mode: RaceMode, officerId: string) => {
+    const res = await run(() => api<RaceResult>('/race', { application_id: appId, workers, mode, officer_id: officerId }));
+    return (res as { result?: RaceResult }).result ?? null;
   };
 
-  // 2. Field Verification Update
-  const handleUpdateStatus = (
-    appId: string, 
-    newStatus: SchemeApplication['status'], 
-    verifierId: string, 
-    notes?: string
-  ) => {
-    setApplications(prev => prev.map(app => {
-      if (app.application_id !== appId) return app;
+  const handleResolveFlag = (flagId: string, notes: string) =>
+    run(() => api(`/fraud/${flagId}/resolve`, { notes }), () => `${flagId} resolved`);
 
-      // Status Machine Trigger: Check valid transition
-      if (app.status === 'submitted' && newStatus !== 'under_review' && newStatus !== 'rejected') {
-        alert("Trigger trg_status_flow Blocked: submitted must transition to under_review first.");
-        return app;
+  const handleInjectFraudCase = (type: FraudFlag['flag_type']) =>
+    run(() => api<{ attempted: string; flag?: FraudFlag | null }>('/fraud/inject', { type }), (r) => null).then((res) => {
+      const r = (res as { result?: { attempted: string; flag?: FraudFlag | null } }).result;
+      if (r) {
+        toast.success(r.flag ? `Caught: ${r.flag.flag_id} (${r.flag.severity})` : 'Attempt made', `${r.attempted}${r.flag ? ` → ${r.flag.details}` : ''}`);
       }
-      if (app.status === 'under_review' && newStatus !== 'verified' && newStatus !== 'rejected') {
-        alert("Trigger trg_status_flow Blocked: under_review must transition to verified next.");
-        return app;
-      }
+      return res;
+    });
 
-      const updatedDocs = app.documents.map(d => ({
-        ...d,
-        verified: newStatus === 'verified' ? true : d.verified,
-      }));
+  const handleRunFullDatabaseScan = () =>
+    run(() => api<Record<string, number | string>>('/fraud/scan', {}), (r) =>
+      `Scan complete: ${Object.entries(r).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join(' · ')}`);
 
-      return {
-        ...app,
-        status: newStatus,
-        verified_by: verifierId,
-        verified_at: new Date().toISOString().replace('T', ' ').slice(0, 16),
-        rejection_reason: notes || app.rejection_reason,
-        documents: updatedDocs,
-      };
-    }));
+  const handleFreezeCitizen = (citizenId: string, frozen: boolean) =>
+    run(() => api(`/citizens/${citizenId}/freeze`, { frozen, officer_id: 'CHIEF_VIGILANCE_OFFICER_01' }),
+      () => `${citizenId} ${frozen ? 'frozen' : 'unfrozen'}`);
 
-    // Log in Audit Trail
-    const log: AuditLogEntry = {
-      log_id: `AUD-${Date.now().toString().slice(-4)}`,
-      entity_name: 'Applications',
-      entity_id: appId,
-      action: 'UPDATE',
-      performed_by: verifierId,
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      old_state: `status: pending`,
-      new_state: `status: ${newStatus}, verifier: ${verifierId}`,
-      status: 'SUCCESS',
-    };
-    setAuditLogs(prev => [log, ...prev]);
-  };
-
-  // 3. Approver Action (Separation of duties trigger check!)
-  const handleApproveApplication = (appId: string, approverId: string): { success: boolean; error?: string } => {
-    const targetApp = applications.find(a => a.application_id === appId);
-    if (!targetApp) return { success: false, error: 'Application not found.' };
-
-    // Trigger: Prevent Self-Approval (trg_separation_of_duties)
-    if (targetApp.verified_by && targetApp.verified_by === approverId) {
-      const err = `Accountability Violation: Verifier (${targetApp.verified_by}) cannot be the Approver (${approverId}) for application ${appId}. Enforced by trigger trg_separation_of_duties.`;
-      
-      const log: AuditLogEntry = {
-        log_id: `AUD-${Date.now().toString().slice(-4)}`,
-        entity_name: 'Applications',
-        entity_id: appId,
-        action: 'UPDATE',
-        performed_by: approverId,
-        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-        new_state: 'Attempted self-approval blocked',
-        status: 'BLOCKED_BY_TRIGGER',
-      };
-      setAuditLogs(prev => [log, ...prev]);
-      return { success: false, error: err };
-    }
-
-    setApplications(prev => prev.map(a => {
-      if (a.application_id !== appId) return a;
-      return {
-        ...a,
-        status: 'approved',
-        approved_by: approverId,
-        approved_at: new Date().toISOString().replace('T', ' ').slice(0, 16),
-      };
-    }));
-
-    const log: AuditLogEntry = {
-      log_id: `AUD-${Date.now().toString().slice(-4)}`,
-      entity_name: 'Applications',
-      entity_id: appId,
-      action: 'UPDATE',
-      performed_by: approverId,
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      new_state: `status: approved, approver: ${approverId}`,
-      status: 'SUCCESS',
-    };
-    setAuditLogs(prev => [log, ...prev]);
-
-    return { success: true };
-  };
-
-  // 4. Disbursal (Two-phase bank transfer & UNIQUE constraint)
-  const handleDisbursePayment = (
-    appId: string, 
-    instalmentNo: number, 
-    disburserId: string
-  ): { success: boolean; error?: string } => {
-    const targetApp = applications.find(a => a.application_id === appId);
-    if (!targetApp) return { success: false, error: 'Application not found.' };
-
-    // Check UNIQUE(application_id, instalment_no) (Fix ③)
-    const existingDisbursal = disbursals.find(
-      d => d.application_id === appId && d.instalment_no === instalmentNo
-    );
-
-    if (existingDisbursal) {
-      const err = `Blocked by UNIQUE(application_id, instalment_no): Instalment #${instalmentNo} already paid via Txn ${existingDisbursal.txn_ref}`;
-      
-      const log: AuditLogEntry = {
-        log_id: `AUD-${Date.now().toString().slice(-4)}`,
-        entity_name: 'Disbursals',
-        entity_id: `${appId}-INST-${instalmentNo}`,
-        action: 'DISBURSAL_ATTEMPT',
-        performed_by: disburserId,
-        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-        new_state: err,
-        status: 'BLOCKED_BY_CONSTRAINT',
-      };
-      setAuditLogs(prev => [log, ...prev]);
-      return { success: false, error: err };
-    }
-
-    const schemeObj = schemes.find(s => s.scheme_id === targetApp.scheme_id);
-    const amount = schemeObj ? schemeObj.benefit_amount : 2000;
-    const citizen = citizens.find(c => c.citizen_id === targetApp.citizen_id);
-
-    const newDisbursal: Disbursal = {
-      disbursal_id: `TXN-DBT-2026-${Math.floor(100 + Math.random() * 900)}`,
-      application_id: appId,
-      citizen_id: targetApp.citizen_id,
-      citizen_name: targetApp.citizen_name,
-      scheme_id: targetApp.scheme_id,
-      scheme_title: targetApp.scheme_title,
-      instalment_no: instalmentNo,
-      amount: amount,
-      bank_ifsc: citizen ? citizen.bank_ifsc : 'SBIN0004123',
-      bank_account_no: citizen ? citizen.bank_account_no : '30498172635',
-      txn_ref: `PFMS/2026/${Math.floor(1000000000 + Math.random() * 9000000000)}`,
-      pfms_status: 'SUCCESS',
-      disbursed_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      disbursed_by: disburserId,
-    };
-
-    setDisbursals(prev => [newDisbursal, ...prev]);
-
-    // Update application to 'paid'
-    setApplications(prev => prev.map(a => {
-      if (a.application_id !== appId) return a;
-      return { ...a, status: 'paid' };
-    }));
-
-    // Audit Log
-    const log: AuditLogEntry = {
-      log_id: `AUD-${Date.now().toString().slice(-4)}`,
-      entity_name: 'Disbursals',
-      entity_id: newDisbursal.disbursal_id,
-      action: 'INSERT',
-      performed_by: disburserId,
-      timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      new_state: `Disbursed ₹${amount} (Instalment #${instalmentNo}) to ${targetApp.citizen_name}`,
-      status: 'SUCCESS',
-    };
-    setAuditLogs(prev => [log, ...prev]);
-
-    return { success: true };
-  };
-
-  // 5. Concurrency Race Condition Attack Simulator
-  const handleSimulateRaceCondition = (appId: string, threadsCount: number = 15) => {
-    const logs: string[] = [];
-    logs.push(`[T=0ms] Blasting ${threadsCount} concurrent transaction workers at application ${appId}...`);
-    logs.push(`[T=2ms] All ${threadsCount} workers execute: SELECT status FROM Applications WHERE application_id = '${appId}' AND status = 'approved' FOR UPDATE;`);
-    logs.push(`[T=5ms] Worker #1 acquires exclusive row-level lock on row '${appId}'.`);
-    logs.push(`[T=6ms] Workers #2 through #${threadsCount} suspended in lock-wait queue.`);
-    logs.push(`[T=18ms] Worker #1 executes: INSERT INTO Disbursals ... VALUES ('${appId}', 1, 2000, ...);`);
-    logs.push(`[T=24ms] Worker #1 executes: UPDATE Applications SET status = 'paid' ...;`);
-    logs.push(`[T=26ms] Worker #1 executes: COMMIT; -> SUCCESS! Txn committed.`);
-    
-    // Execute the real state disbursal
-    handleDisbursePayment(appId, 1, 'CONCURRENCY_WORKER_01');
-
-    logs.push(`[T=28ms] Lock released. Workers #2 through #${threadsCount} wake up under READ COMMITTED.`);
-    logs.push(`[T=29ms] PostgreSQL re-evaluates WHERE status = 'approved' on committed row version.`);
-    logs.push(`[T=30ms] Condition status = 'approved' is FALSE (row is now 'paid'). 0 rows returned.`);
-    logs.push(`[T=32ms] Workers #2 through #${threadsCount} exit cleanly with 0 disbursals created.`);
-    logs.push(`[RESULT] Exactly 1 disbursal committed. ${threadsCount - 1} duplicate payouts cleanly avoided!`);
-
-    return {
-      successCount: 1,
-      blockedCount: threadsCount - 1,
-      logs: logs,
-    };
-  };
-
-  // 6. Resolve Fraud Flag
-  const handleResolveFlag = (flagId: string, notes: string) => {
-    setFraudFlags(prev => prev.map(f => {
-      if (f.flag_id !== flagId) return f;
-      return {
-        ...f,
-        resolved: true,
-        resolved_by: 'CHIEF_VIGILANCE_OFFICER_01',
-        resolution_notes: notes,
-      };
-    }));
-  };
-
-  // 7. Inject Test Fraud Cases (for Viva)
-  const handleInjectFraudCase = (type: FraudFlag['flag_type']) => {
-    let newFlag: FraudFlag;
-    const now = new Date().toISOString().replace('T', ' ').slice(0, 16);
-
-    if (type === 'GHOST_BENEFICIARY_OVERALLOCATION') {
-      newFlag = {
-        flag_id: `FLG-${Date.now().toString().slice(-4)}`,
-        flag_type: 'GHOST_BENEFICIARY_OVERALLOCATION',
-        severity: 'CRITICAL',
-        entity_type: 'PARCEL',
-        entity_id: 'KA/Mandya/Maddur/Shivapura/109/4A',
-        details: 'Simulated Injected Fraud: Added secondary claim on PARCEL-KA-GHOST. Total share fraction now 1.35 (135% of land boundary). Caught by trigger trg_check_parcel_share.',
-        detected_at: now,
-        resolved: false,
-      };
-    } else if (type === 'DUPLICATE_BANK_ACCOUNT') {
-      newFlag = {
-        flag_id: `FLG-${Date.now().toString().slice(-4)}`,
-        flag_type: 'DUPLICATE_BANK_ACCOUNT',
-        severity: 'HIGH',
-        entity_type: 'BANK_ACCOUNT',
-        entity_id: 'SBIN0004123 / 30498172635',
-        details: 'Simulated Injected Fraud: Multiple distinct citizen records sharing identical (IFSC, Account_No). Potential money-mule syndicate detected by aggregate HAVING count(*) > 1.',
-        detected_at: now,
-        resolved: false,
-      };
-    } else {
-      newFlag = {
-        flag_id: `FLG-${Date.now().toString().slice(-4)}`,
-        flag_type: 'DOCUMENT_REUSE_FUZZY_NAME',
-        severity: 'HIGH',
-        entity_type: 'DOCUMENT',
-        entity_id: 'HMAC-SHA256: 88de912301fa4901...',
-        details: 'Simulated Injected Fraud: Uploaded duplicate Aadhaar document HMAC under misspelled name "Harprit Sing Sandhu". pg_trgm trigram similarity = 0.91 (Above 0.85 threshold).',
-        detected_at: now,
-        resolved: false,
-      };
-    }
-
-    setFraudFlags(prev => [newFlag, ...prev]);
-    alert(`Fraud Flag Generated: ${newFlag.flag_type} has been captured into the FraudFlags table!`);
-  };
-
-  // 8. Run Full Automated SQL Scan
-  const handleRunFullDatabaseScan = () => {
-    alert("Automated PostgreSQL Scan Complete:\n• Checked 4 Land Parcels & 5 Ownership records.\n• Checked 6 Citizens for composite (IFSC, Account_No) uniqueness.\n• Checked pg_trgm GIN index for fuzzy name variants.\n• 3 active suspect records isolated in FraudFlags table.");
-  };
+  const handleReset = () =>
+    run(() => api('/reset', {}), () => 'Demo database rebuilt from database/schema.sql + seed');
 
   const handleOpenApplyModalWithScheme = (scheme: Scheme) => {
     setSelectedSchemeForModal(scheme);
     setIsApplyModalOpen(true);
   };
 
+  const activeCitizen = useMemo(
+    () => db?.citizens.find((c) => c.citizen_id === activeCitizenId) ?? db?.citizens[0],
+    [db, activeCitizenId],
+  );
+
+  // ------------------------------------------------------------ render
+  if (!db) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+        <div className="max-w-lg bg-white rounded-3xl border border-slate-200 p-8 text-center shadow-sm">
+          <h1 className="text-xl font-extrabold text-slate-900">{loadError ? 'Backend not reachable' : 'Loading from PostgreSQL…'}</h1>
+          {loadError && (
+            <>
+              <p className="text-sm text-slate-600 mt-3">{loadError}</p>
+              <pre className="mt-4 text-left text-xs bg-slate-900 text-emerald-300 rounded-xl p-4 overflow-x-auto">{`cd backend\nnpm install\nnpm start        # API on http://localhost:4000`}</pre>
+              <button onClick={refresh} className="mt-4 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl cursor-pointer">Retry</button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const { citizens, parcels, ownerships, schemes, applications, disbursals, fraudFlags, auditLogs, officers } = db;
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 font-sans">
-      
-      {/* 1. Live Mandi Commodity Ticker matching Farmer.in screenshot 1 */}
       <TopTicker />
 
-      {/* 2. Global Header with navigation and role switchers */}
       <Header
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
@@ -359,7 +170,42 @@ export const App: React.FC = () => {
         fraudCount={fraudFlags.filter(f => !f.resolved).length}
       />
 
-      {/* 3. Hero section matching Farmer.in screenshot 1 */}
+      {/* role switcher: the header's marketing labels (Services, Knowledge, Community) hide which desk is which */}
+      <nav aria-label="Role desks" className="bg-white border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center gap-2 overflow-x-auto">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 shrink-0">Role desk:</span>
+          {[
+            ['citizen', 'Citizen / Farmer'],
+            ['verifier', 'Verifying Agent'],
+            ['disbursal', 'Approval & Payment'],
+            ['fraud', `Vigilance (${fraudFlags.filter(f => !f.resolved).length})`],
+            ['dbms', 'DBMS Internals'],
+          ].map(([id, label]) => (
+            <button key={id} onClick={() => setCurrentTab(id)} aria-current={currentTab === id ? 'page' : undefined}
+              className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                currentTab === id ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {/* live database status strip */}
+      <div className="bg-slate-900 text-[11px] text-slate-300 font-mono">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-400" />PostgreSQL: live</span>
+          <span className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${db.meta.mongo.connected ? 'bg-emerald-400' : 'bg-rose-500'}`} />
+            MongoDB: {db.meta.mongo.connected ? 'live' : `offline (${db.meta.mongo.error ?? 'not connected'})`}
+          </span>
+          <span className="text-slate-500">synced {db.meta.generated_at}{busy ? ' · working…' : ''}</span>
+          <button onClick={handleReset} disabled={busy}
+            className="ml-auto px-2 py-0.5 rounded border border-slate-600 hover:bg-slate-800 cursor-pointer disabled:opacity-50">
+            Reset demo database
+          </button>
+        </div>
+      </div>
+
       {currentTab === 'citizen' && (
         <Hero
           language={language}
@@ -375,19 +221,17 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* 4. Tab Content */}
       <main className="flex-1">
-        {currentTab === 'citizen' && (
+        {currentTab === 'citizen' && activeCitizen && (
           <>
-            <SchemesGrid
-              schemes={schemes}
-              language={language}
-              onApplyForScheme={handleOpenApplyModalWithScheme}
-              searchFilter={searchQuery}
-            />
+            <SchemesGrid schemes={schemes} language={language} onApplyForScheme={handleOpenApplyModalWithScheme} searchFilter={searchQuery} />
             <CitizenPortal
-              applications={applications}
+              applications={applications.filter(a => a.citizen_id === activeCitizen.citizen_id)}
               currentCitizen={activeCitizen}
+              citizens={citizens}
+              ownerships={ownerships.filter(o => o.citizen_id === activeCitizen.citizen_id)}
+              onSelectCitizen={setActiveCitizenId}
+              onOpenRegister={() => setIsRegisterOpen(true)}
               onOpenApplyModal={() => handleOpenApplyModalWithScheme(schemes[0])}
               language={language}
             />
@@ -395,20 +239,11 @@ export const App: React.FC = () => {
         )}
 
         {currentTab === 'schemes' && (
-          <SchemesGrid
-            schemes={schemes}
-            language={language}
-            onApplyForScheme={handleOpenApplyModalWithScheme}
-            searchFilter={searchQuery}
-          />
+          <SchemesGrid schemes={schemes} language={language} onApplyForScheme={handleOpenApplyModalWithScheme} searchFilter={searchQuery} />
         )}
 
         {currentTab === 'verifier' && (
-          <VerificationDesk
-            applications={applications}
-            onUpdateStatus={handleUpdateStatus}
-            language={language}
-          />
+          <VerificationDesk applications={applications} officers={officers} onUpdateStatus={handleUpdateStatus} language={language} />
         )}
 
         {currentTab === 'disbursal' && (
@@ -416,7 +251,9 @@ export const App: React.FC = () => {
             applications={applications}
             disbursals={disbursals}
             auditLogs={auditLogs}
+            officers={officers}
             onApproveApplication={handleApproveApplication}
+            onReleaseNext={handleReleaseNext}
             onDisbursePayment={handleDisbursePayment}
             onSimulateRaceCondition={handleSimulateRaceCondition}
             language={language}
@@ -433,31 +270,44 @@ export const App: React.FC = () => {
             onResolveFlag={handleResolveFlag}
             onInjectFraudCase={handleInjectFraudCase}
             onRunFullDatabaseScan={handleRunFullDatabaseScan}
+            onFreezeCitizen={handleFreezeCitizen}
             language={language}
           />
         )}
 
-        {currentTab === 'dbms' && (
-          <DbmsDefenseSuite language={language} />
-        )}
+        {currentTab === 'dbms' && <DbmsDefenseSuite language={language} />}
       </main>
 
-      {/* 5. Scheme Apply Modal */}
       <ApplyModal
+        key={`${selectedSchemeForModal?.scheme_id}-${isApplyModalOpen}`}
         scheme={selectedSchemeForModal}
         isOpen={isApplyModalOpen}
         onClose={() => setIsApplyModalOpen(false)}
         citizens={citizens}
         parcels={parcels}
         ownerships={ownerships}
-        applications={applications}
-        onSubmitApplication={handleSubmitApplication}
+        defaultCitizenId={activeCitizen?.citizen_id}
+        onSubmitted={async (appId, citizenId) => {
+          setIsApplyModalOpen(false);
+          setActiveCitizenId(citizenId);
+          setCurrentTab('citizen');
+          toast.success(`Application ${appId} submitted`, 'Stored in PostgreSQL; proof-document metadata stored in MongoDB.');
+          await refresh();
+        }}
         language={language}
       />
 
-      {/* 6. Footer matching Farmer.in */}
-      <Footer language={language} />
+      <RegisterModal
+        isOpen={isRegisterOpen}
+        onClose={() => setIsRegisterOpen(false)}
+        onDone={async (citizenId) => {
+          if (citizenId) setActiveCitizenId(citizenId);
+          await refresh();
+        }}
+      />
 
+      <Footer language={language} />
+      <Toaster />
     </div>
   );
 };

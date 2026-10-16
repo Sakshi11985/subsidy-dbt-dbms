@@ -141,7 +141,7 @@ export const Header: React.FC<HeaderProps> = ({
             <a
               href="#whatsapp"
               onClick={(e) => { e.preventDefault(); alert("Farmer.in Daily Mandi Updates on WhatsApp:\nJoin 4.2 Lakh Farmers receiving real-time price alerts."); }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-full bg-[#16a34a] hover:bg-[#15803d] text-white shadow-xs transition cursor-pointer"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-full bg-[#16a34a] hover:bg-[#15803d] text-white shadow-xs transition cursor-pointer"
             >
               <span>📱</span>
               <span>Join WhatsApp</span>

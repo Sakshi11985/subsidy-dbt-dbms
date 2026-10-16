@@ -8,9 +8,10 @@ interface FraudConsoleProps {
   citizens: Citizen[];
   parcels: LandParcel[];
   ownerships: LandOwnership[];
-  onResolveFlag: (flagId: string, notes: string) => void;
-  onInjectFraudCase: (type: FraudFlag['flag_type']) => void;
-  onRunFullDatabaseScan: () => void;
+  onResolveFlag: (flagId: string, notes: string) => Promise<unknown>;
+  onInjectFraudCase: (type: FraudFlag['flag_type']) => Promise<unknown>;
+  onRunFullDatabaseScan: () => Promise<unknown>;
+  onFreezeCitizen: (citizenId: string, frozen: boolean) => Promise<unknown>;
   language: Language;
 }
 
@@ -23,8 +24,18 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
   onResolveFlag,
   onInjectFraudCase,
   onRunFullDatabaseScan,
+  onFreezeCitizen,
   language,
 }) => {
+  const [running, setRunning] = useState<string | null>(null);
+  const runOnce = async (key: string, fn: () => Promise<unknown>) => {
+    setRunning(key);
+    try { await fn(); } finally { setRunning(null); }
+  };
+  const citizenIdsIn = (flag: FraudFlag) => {
+    const ids = new Set<string>((`${flag.entity_id} ${flag.details}`.match(/CIT-\d+/g) ?? []));
+    return [...ids].filter((id) => citizens.some((c) => c.citizen_id === id));
+  };
   const isHi = language === 'hi';
   const [activeTab, setActiveTab] = useState<'FLAGS' | 'AUDIT_LOG' | 'INJECTOR'>('FLAGS');
   const [filterSeverity, setFilterSeverity] = useState<string>('ALL');
@@ -57,10 +68,11 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
 
           <div className="flex items-center gap-3 shrink-0">
             <button
-              onClick={onRunFullDatabaseScan}
-              className="px-5 py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-2xl shadow-lg transition flex items-center gap-2 cursor-pointer"
+              onClick={() => runOnce('scan', onRunFullDatabaseScan)}
+              disabled={!!running}
+              className="px-5 py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-2xl shadow-lg transition flex items-center gap-2 cursor-pointer disabled:opacity-60"
             >
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw className={`w-4 h-4 ${running === 'scan' ? 'animate-spin' : ''}`} />
               <span>Run Automated SQL Scan</span>
             </button>
           </div>
@@ -101,7 +113,7 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
               <span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
             </div>
             <p className="text-[11px] text-slate-500 mt-1">
-              Fuzzy Name Match: <code className="text-blue-700 font-bold">pg_trgm &gt; 0.85</code>
+              Aadhaar reuse + <code className="text-blue-700 font-bold">pg_trgm similarity ≥ 0.6</code>
             </p>
             <div className="mt-3 text-lg font-black text-slate-900 font-mono">
               {fraudFlags.filter(f => f.flag_type === 'DOCUMENT_REUSE_FUZZY_NAME' && !f.resolved).length} Unresolved
@@ -117,7 +129,7 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
               Concurrent Races: <code className="text-emerald-700 font-bold">FOR UPDATE</code> lock
             </p>
             <div className="mt-3 text-lg font-black text-emerald-700 font-mono">
-              100% Blocked
+              {auditLogs.filter(l => l.action === 'DISBURSAL_ATTEMPT' && l.status !== 'SUCCESS').length} attempts refused
             </div>
           </div>
 
@@ -161,12 +173,12 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
         {/* Tab 1: Flags Registry */}
         {activeTab === 'FLAGS' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <span className="text-xs text-slate-500 font-mono">
                 Isolated in table <strong className="text-slate-800">FraudFlags</strong> without corrupting entity records (Fix 3.B)
               </span>
 
-              <div className="flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-2 text-xs flex-wrap">
                 <span className="text-slate-500 font-medium">Filter Severity:</span>
                 {['ALL', 'CRITICAL', 'HIGH', 'MEDIUM'].map(s => (
                   <button
@@ -200,7 +212,7 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                         {flag.flag_id}
                       </span>
                       <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded ${
-                        flag.severity === 'CRITICAL' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                        flag.severity === 'CRITICAL' ? 'bg-rose-100 text-rose-800' : flag.severity === 'HIGH' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'
                       }`}>
                         {flag.severity}
                       </span>
@@ -223,9 +235,12 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                     </div>
                   </div>
 
-                  <p className="mt-3 text-xs text-slate-800 leading-relaxed font-sans">
+                  <p className="mt-3 text-xs text-slate-800 leading-relaxed font-sans break-words">
                     {flag.details}
                   </p>
+                  {flag.detected_by && (
+                    <p className="mt-1 text-[10px] text-slate-500 font-mono">Raised by: {flag.detected_by}</p>
+                  )}
 
                   <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2 text-xs">
                     <span className="font-mono text-[11px] text-slate-500">
@@ -233,15 +248,30 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                     </span>
 
                     {!flag.resolved ? (
-                      <button
-                        onClick={() => {
-                          const notes = prompt("Enter resolution findings / officer notes:", "Audited land registry records. Secondary claim cancelled.");
-                          if (notes) onResolveFlag(flag.flag_id, notes);
-                        }}
-                        className="px-4 py-1.5 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl transition cursor-pointer"
-                      >
-                        Investigate & Resolve
-                      </button>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {citizenIdsIn(flag).map((cid) => {
+                          const c = citizens.find((x) => x.citizen_id === cid);
+                          return (
+                            <button key={cid}
+                              disabled={!!running}
+                              onClick={() => runOnce(`${flag.flag_id}-${cid}`, () => onFreezeCitizen(cid, !c?.is_frozen))}
+                              className="px-3 py-1.5 bg-white border border-rose-300 text-rose-700 hover:bg-rose-50 text-[11px] font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
+                            >
+                              {c?.is_frozen ? `Unfreeze ${cid}` : `Freeze ${cid}`}
+                            </button>
+                          );
+                        })}
+                        <button
+                          disabled={!!running}
+                          onClick={() => {
+                            const notes = prompt("Enter resolution findings / officer notes:", "Audited land registry records. Secondary claim cancelled.");
+                            if (notes) runOnce(flag.flag_id, () => onResolveFlag(flag.flag_id, notes));
+                          }}
+                          className="px-4 py-1.5 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
+                        >
+                          Investigate & Resolve
+                        </button>
+                      </div>
                     ) : (
                       <span className="text-[11px] text-emerald-700 italic">
                         Resolved by {flag.resolved_by}: "{flag.resolution_notes}"
@@ -264,7 +294,8 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                 <span>Immutable System Audit Log (Fix 3.A)</span>
               </h3>
               <p className="text-xs text-slate-500">
-                Maintained by generic audit trigger capturing OLD and NEW state for all critical tables.
+                Successful changes are written by the generic <code>audit_row_change()</code> trigger (OLD and NEW row as JSONB). Refused attempts roll back with
+                their transaction, so the API records those afterwards with a BLOCKED_* status. Latest 200 rows.
               </p>
             </div>
 
@@ -295,8 +326,8 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                       <td className="p-3 text-slate-400">{log.timestamp}</td>
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          log.status === 'SUCCESS' 
-                            ? 'bg-emerald-100 text-emerald-800' 
+                          log.status === 'SUCCESS'
+                            ? 'bg-emerald-100 text-emerald-800'
                             : 'bg-rose-100 text-rose-800'
                         }`}>
                           {log.status}
@@ -325,7 +356,8 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                   Deliberate Fraud Injection Suite (Item 3.D in Problem Statement)
                 </h3>
                 <p className="text-xs text-slate-600 mt-1 max-w-3xl leading-relaxed">
-                  In viva examination, you can show the examiner that you didn't just build UI—you planted known ground-truth fraud patterns into the database and proved the triggers and procedures catch them 100% of the time.
+                  Each button makes a real fraudulent write against PostgreSQL / MongoDB. Nothing here is simulated in the browser: the flag you see
+                  afterwards was written by a trigger or by the aggregation pipeline.
                 </p>
               </div>
             </div>
@@ -336,12 +368,13 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                 <div>
                   <h4 className="font-bold text-sm text-slate-900">Pattern 1: Ghost Land Parcel</h4>
                   <p className="text-xs text-slate-600 mt-1">
-                    Inject a secondary claim on PARCEL-KA-GHOST that pushes total share fraction to 1.35 &gt; 1.0.
+                    Creates a 4-acre parcel, gives CIT-1004 a 70% share, then tries a 60% claim for CIT-1005 (total 130%). <code>trg_check_parcel_share</code> quarantines it.
                   </p>
                 </div>
                 <button
-                  onClick={() => onInjectFraudCase('GHOST_BENEFICIARY_OVERALLOCATION')}
-                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+                  disabled={!!running}
+                  onClick={() => runOnce('GHOST_BENEFICIARY_OVERALLOCATION', () => onInjectFraudCase('GHOST_BENEFICIARY_OVERALLOCATION'))}
+                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
                 >
                   Inject Over-allocated Parcel
                 </button>
@@ -351,12 +384,13 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                 <div>
                   <h4 className="font-bold text-sm text-slate-900">Pattern 2: Duplicate Bank Account</h4>
                   <p className="text-xs text-slate-600 mt-1">
-                    Register a new citizen sharing the exact same IFSC and Account Number as another farmer.
+                    Registers a new citizen paying into an existing farmer's (IFSC, account). <code>trg_screen_new_citizen</code> quarantines it.
                   </p>
                 </div>
                 <button
-                  onClick={() => onInjectFraudCase('DUPLICATE_BANK_ACCOUNT')}
-                  className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+                  disabled={!!running}
+                  onClick={() => runOnce('DUPLICATE_BANK_ACCOUNT', () => onInjectFraudCase('DUPLICATE_BANK_ACCOUNT'))}
+                  className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
                 >
                   Inject Duplicate Bank Mule
                 </button>
@@ -366,12 +400,13 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                 <div>
                   <h4 className="font-bold text-sm text-slate-900">Pattern 3: Document Reuse + Fuzzy Name</h4>
                   <p className="text-xs text-slate-600 mt-1">
-                    Upload an identical Aadhaar HMAC with a slight typo name ("Ramesh Kumar" vs "Ramesh Kumaar") tested via pg_trgm.
+                    Adds a rescanned copy of one citizen's Aadhaar (new file hash, same identity) to another citizen's application in MongoDB, then runs the aggregation pipeline.
                   </p>
                 </div>
                 <button
-                  onClick={() => onInjectFraudCase('DOCUMENT_REUSE_FUZZY_NAME')}
-                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+                  disabled={!!running}
+                  onClick={() => runOnce('DOCUMENT_REUSE_FUZZY_NAME', () => onInjectFraudCase('DOCUMENT_REUSE_FUZZY_NAME'))}
+                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
                 >
                   Inject Reused Doc & Fuzzy Name
                 </button>

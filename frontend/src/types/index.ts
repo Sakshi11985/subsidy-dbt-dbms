@@ -6,6 +6,7 @@ export type ApplicationStatus =
   | 'verified'
   | 'approved'
   | 'payment_initiated'
+  | 'partially_paid'
   | 'paid'
   | 'rejected';
 
@@ -20,6 +21,7 @@ export interface Citizen {
   bank_account_no: string;
   state: string;
   district: string;
+  is_frozen?: boolean;
 }
 
 export interface LandParcel {
@@ -44,8 +46,8 @@ export interface LandOwnership {
 export interface EligibilityRule {
   rule_id: string;
   scheme_id: string;
-  attribute: 'land_area' | 'annual_income' | 'crop_type' | 'state';
-  operator: '<=' | '>=' | '==' | '!=';
+  attribute: 'land_area' | 'total_land_holding' | 'annual_income' | 'state';
+  operator: '<=' | '>=' | '<' | '>' | '==' | '!=';
   target_value: string;
   description: string;
 }
@@ -62,6 +64,7 @@ export interface Scheme {
   instalments_count: number;
   image_url: string;
   tag_text: string;
+  required_documents?: string[];
   rules: EligibilityRule[];
 }
 
@@ -81,11 +84,17 @@ export interface SchemeApplication {
   approved_by?: string;
   approved_at?: string;
   rejection_reason?: string;
+  instalments_paid?: number;
+  instalments_count?: number;
+  benefit_amount?: number;
+  documents_missing?: boolean;
   documents: {
     doc_type: string;
     doc_name: string;
     hmac_signature: string;
+    file_sha256?: string;
     verified: boolean;
+    mismatch?: boolean; // Aadhaar on the document differs from the applicant's own
   }[];
 }
 
@@ -114,7 +123,9 @@ export interface FraudFlag {
     | 'DOCUMENT_REUSE_FUZZY_NAME'
     | 'RACE_CONDITION_DOUBLE_PAYOUT';
   severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
-  entity_type: 'PARCEL' | 'BANK_ACCOUNT' | 'DOCUMENT' | 'DISBURSAL';
+  entity_type: 'PARCEL' | 'BANK_ACCOUNT' | 'DOCUMENT' | 'DISBURSAL' | 'CITIZEN';
+  detected_by?: string;
+  evidence?: unknown;
   entity_id: string;
   details: string;
   detected_at: string;
@@ -127,10 +138,56 @@ export interface AuditLogEntry {
   log_id: string;
   entity_name: string;
   entity_id: string;
-  action: 'INSERT' | 'UPDATE' | 'DELETE' | 'DISBURSAL_ATTEMPT';
+  action: 'INSERT' | 'UPDATE' | 'DELETE' | 'DISBURSAL_ATTEMPT' | string;
   performed_by: string;
   timestamp: string;
   old_state?: string;
   new_state: string;
-  status: 'SUCCESS' | 'BLOCKED_BY_CONSTRAINT' | 'BLOCKED_BY_TRIGGER';
+  status: 'SUCCESS' | 'BLOCKED_BY_CONSTRAINT' | 'BLOCKED_BY_TRIGGER' | 'BLOCKED_BY_LOCK';
+}
+
+export interface Officer {
+  officer_id: string;
+  full_name: string;
+  designation: string;
+  can_verify: boolean;
+  can_approve: boolean;
+  can_disburse: boolean;
+}
+
+export type RaceMode = 'safe' | 'no_lock' | 'no_defence';
+
+export interface RaceResult {
+  run_id: string;
+  mode: RaceMode;
+  workers: number;
+  application_id: string;
+  successCount: number;
+  blockedCount: number;
+  ledgerRows: number;
+  duplicatePayouts: number;
+  leakage: number;
+  blockedBy: Record<string, number>;
+  elapsed_ms: number;
+  logs: string[];
+}
+
+export interface EligibilityResult {
+  eligible: boolean;
+  message: string;
+  rules: { rule_id: string; attribute: string; passed: boolean; message: string }[];
+  duplicate: { application_id: string; status: string } | null;
+}
+
+export interface DbState {
+  citizens: Citizen[];
+  parcels: LandParcel[];
+  ownerships: (LandOwnership & { parcel_key: string })[];
+  officers: Officer[];
+  schemes: Scheme[];
+  applications: SchemeApplication[];
+  disbursals: Disbursal[];
+  fraudFlags: FraudFlag[];
+  auditLogs: AuditLogEntry[];
+  meta: { mongo: { connected: boolean; error: string | null; validators: boolean | null }; generated_at: string };
 }
