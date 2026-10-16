@@ -11,7 +11,7 @@ The important rules are enforced **inside the database** (constraints, triggers,
 | API | Node.js 18+ / Express (`backend/`) |
 | UI | React 19 + Vite + Tailwind 4 (`frontend/`) |
 
-**Team:** Swasthik, TEAMMATE_NAME (frontend and initial schema).
+**Team:** Swasthik, Sakshi (frontend and initial schema).
 
 ---
 
