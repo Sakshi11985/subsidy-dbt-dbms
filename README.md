@@ -11,7 +11,12 @@ The important rules are enforced **inside the database** (constraints, triggers,
 | API | Node.js 18+ / Express (`backend/`) |
 | UI | React 19 + Vite + Tailwind 4 (`frontend/`) |
 
-**Team:** Sakshi (backend, database), Srinidhi (frontend).
+**Team**
+
+| Name | SRN | Role |
+|---|---|---|
+| Sakshi P Shetty | PES1UG24AM395 | Backend, database, integration |
+| Srinidhi P | PES1UG24AM407 | Frontend |
 
 ---
 
