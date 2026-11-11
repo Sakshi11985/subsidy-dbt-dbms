@@ -178,7 +178,7 @@ Your numbers will differ by machine. Re-run `npm run benchmark` and the DBMS Int
 4. **Approval & Payment** → choose `BDO_07` and try to approve `APP-2026-0003`. BDO_07 verified it, so the separation-of-duties trigger refuses. Approve with `OFFICER_APPROVER_02`, then release the payment. Also try *Simulate bank failure*.
 5. **Race Condition Lab**: run *No lock, no UNIQUE* (money leaks), then *No row lock* (UNIQUE saves you), then *Real code path* (the lock saves you, cleanly).
 6. **Vigilance**: inject each fraud pattern, run the scan, freeze a citizen, resolve a flag, read the audit trail.
-7. **DBMS Internals**: the live DDL (imported from `database/schema.sql`), the viva Q&A, and the measured benchmarks.
+
 
 ---
 
