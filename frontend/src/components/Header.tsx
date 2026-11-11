@@ -40,7 +40,7 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="bg-white sticky top-0 z-40 border-b border-slate-200 shadow-xs">
       
-      {/* 1. Exact Header Bar (Logo, Search, Language, WhatsApp) */}
+      {/* 1. Exact Header Bar (Logo, Search, Language) */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5">
         <div className="flex items-center justify-between gap-4">
           
@@ -136,16 +136,6 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               )}
             </div>
-
-            {/* Join WhatsApp Button */}
-            <a
-              href="#whatsapp"
-              onClick={(e) => { e.preventDefault(); alert("Farmer.in Daily Mandi Updates on WhatsApp:\nJoin 4.2 Lakh Farmers receiving real-time price alerts."); }}
-              className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-full bg-[#16a34a] hover:bg-[#15803d] text-white shadow-xs transition cursor-pointer"
-            >
-              <span>📱</span>
-              <span>Join WhatsApp</span>
-            </a>
 
           </div>
 
@@ -261,18 +251,6 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
 
           </div>
-
-          {/* Join the Sangh button on far right from screenshot */}
-          <div className="hidden lg:flex items-center pl-4 py-1.5">
-            <button
-              onClick={() => alert("Welcome to the Kisan Sangh Community!")}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#16a34a] hover:bg-[#15803d] text-white text-xs font-bold transition shadow-xs cursor-pointer whitespace-nowrap"
-            >
-              <span>🌾</span>
-              <span>Join the Sangh</span>
-            </button>
-          </div>
-
         </div>
       </nav>
     </header>

@@ -11,7 +11,6 @@ import { CitizenPortal } from './components/CitizenPortal';
 import { VerificationDesk } from './components/VerificationDesk';
 import { DisbursalDesk } from './components/DisbursalDesk';
 import { FraudConsole } from './components/FraudConsole';
-import { DbmsDefenseSuite } from './components/DbmsDefenseSuite';
 import { ApplyModal } from './components/ApplyModal';
 import { RegisterModal } from './components/RegisterModal';
 import { Footer } from './components/Footer';
@@ -179,7 +178,6 @@ export const App: React.FC = () => {
             ['verifier', 'Verifying Agent'],
             ['disbursal', 'Approval & Payment'],
             ['fraud', `Vigilance (${fraudFlags.filter(f => !f.resolved).length})`],
-            ['dbms', 'DBMS Internals'],
           ].map(([id, label]) => (
             <button key={id} onClick={() => setCurrentTab(id)} aria-current={currentTab === id ? 'page' : undefined}
               className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
@@ -274,8 +272,6 @@ export const App: React.FC = () => {
             language={language}
           />
         )}
-
-        {currentTab === 'dbms' && <DbmsDefenseSuite language={language} />}
       </main>
 
       <ApplyModal
