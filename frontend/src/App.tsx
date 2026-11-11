@@ -105,15 +105,6 @@ export const App: React.FC = () => {
   const handleResolveFlag = (flagId: string, notes: string) =>
     run(() => api(`/fraud/${flagId}/resolve`, { notes }), () => `${flagId} resolved`);
 
-  const handleInjectFraudCase = (type: FraudFlag['flag_type']) =>
-    run(() => api<{ attempted: string; flag?: FraudFlag | null }>('/fraud/inject', { type }), (r) => null).then((res) => {
-      const r = (res as { result?: { attempted: string; flag?: FraudFlag | null } }).result;
-      if (r) {
-        toast.success(r.flag ? `Caught: ${r.flag.flag_id} (${r.flag.severity})` : 'Attempt made', `${r.attempted}${r.flag ? ` → ${r.flag.details}` : ''}`);
-      }
-      return res;
-    });
-
   const handleRunFullDatabaseScan = () =>
     run(() => api<Record<string, number | string>>('/fraud/scan', {}), (r) =>
       `Scan complete: ${Object.entries(r).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join(' · ')}`);
@@ -266,7 +257,6 @@ export const App: React.FC = () => {
             parcels={parcels}
             ownerships={ownerships}
             onResolveFlag={handleResolveFlag}
-            onInjectFraudCase={handleInjectFraudCase}
             onRunFullDatabaseScan={handleRunFullDatabaseScan}
             onFreezeCitizen={handleFreezeCitizen}
             language={language}

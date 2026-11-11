@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { FraudFlag, AuditLogEntry, Citizen, LandParcel, LandOwnership, Language } from '../types';
-import { AlertTriangle, ShieldCheck, Bug, CheckCircle, RefreshCw, FileText, Search, UserX, Database, History } from 'lucide-react';
+import { AlertTriangle, RefreshCw, History } from 'lucide-react';
 
 interface FraudConsoleProps {
   fraudFlags: FraudFlag[];
@@ -9,7 +9,6 @@ interface FraudConsoleProps {
   parcels: LandParcel[];
   ownerships: LandOwnership[];
   onResolveFlag: (flagId: string, notes: string) => Promise<unknown>;
-  onInjectFraudCase: (type: FraudFlag['flag_type']) => Promise<unknown>;
   onRunFullDatabaseScan: () => Promise<unknown>;
   onFreezeCitizen: (citizenId: string, frozen: boolean) => Promise<unknown>;
   language: Language;
@@ -19,10 +18,7 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
   fraudFlags,
   auditLogs,
   citizens,
-  parcels,
-  ownerships,
   onResolveFlag,
-  onInjectFraudCase,
   onRunFullDatabaseScan,
   onFreezeCitizen,
   language,
@@ -37,7 +33,7 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
     return [...ids].filter((id) => citizens.some((c) => c.citizen_id === id));
   };
   const isHi = language === 'hi';
-  const [activeTab, setActiveTab] = useState<'FLAGS' | 'AUDIT_LOG' | 'INJECTOR'>('FLAGS');
+  const [activeTab, setActiveTab] = useState<'FLAGS' | 'AUDIT_LOG'>('FLAGS');
   const [filterSeverity, setFilterSeverity] = useState<string>('ALL');
 
   const filteredFlags = fraudFlags.filter(f => {
@@ -159,14 +155,6 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
           >
             <History className="w-3.5 h-3.5" />
             <span>Audit Trail Log ({auditLogs.length})</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('INJECTOR')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-2 bg-gradient-to-r from-amber-600 to-amber-700 text-white hover:from-amber-700 hover:to-amber-800`}
-          >
-            <Bug className="w-3.5 h-3.5" />
-            <span>Deliberate Fraud Injection (For Viva Evaluation)</span>
           </button>
         </div>
 
@@ -340,78 +328,6 @@ export const FraudConsole: React.FC<FraudConsoleProps> = ({
                   ))}
                 </tbody>
               </table>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 3: Deliberate Fraud Injection */}
-        {activeTab === 'INJECTOR' && (
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-amber-300 shadow-sm space-y-6">
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 rounded-2xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-md">
-                <Bug className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-xl font-extrabold text-slate-900">
-                  Deliberate Fraud Injection Suite (Item 3.D in Problem Statement)
-                </h3>
-                <p className="text-xs text-slate-600 mt-1 max-w-3xl leading-relaxed">
-                  Each button makes a real fraudulent write against PostgreSQL / MongoDB. Nothing here is simulated in the browser: the flag you see
-                  afterwards was written by a trigger or by the aggregation pipeline.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-              
-              <div className="p-5 rounded-2xl border border-slate-200 bg-slate-50 flex flex-col justify-between space-y-4">
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Pattern 1: Ghost Land Parcel</h4>
-                  <p className="text-xs text-slate-600 mt-1">
-                    Creates a 4-acre parcel, gives CIT-1004 a 70% share, then tries a 60% claim for CIT-1005 (total 130%). <code>trg_check_parcel_share</code> quarantines it.
-                  </p>
-                </div>
-                <button
-                  disabled={!!running}
-                  onClick={() => runOnce('GHOST_BENEFICIARY_OVERALLOCATION', () => onInjectFraudCase('GHOST_BENEFICIARY_OVERALLOCATION'))}
-                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
-                >
-                  Inject Over-allocated Parcel
-                </button>
-              </div>
-
-              <div className="p-5 rounded-2xl border border-slate-200 bg-slate-50 flex flex-col justify-between space-y-4">
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Pattern 2: Duplicate Bank Account</h4>
-                  <p className="text-xs text-slate-600 mt-1">
-                    Registers a new citizen paying into an existing farmer's (IFSC, account). <code>trg_screen_new_citizen</code> quarantines it.
-                  </p>
-                </div>
-                <button
-                  disabled={!!running}
-                  onClick={() => runOnce('DUPLICATE_BANK_ACCOUNT', () => onInjectFraudCase('DUPLICATE_BANK_ACCOUNT'))}
-                  className="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
-                >
-                  Inject Duplicate Bank Mule
-                </button>
-              </div>
-
-              <div className="p-5 rounded-2xl border border-slate-200 bg-slate-50 flex flex-col justify-between space-y-4">
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Pattern 3: Document Reuse + Fuzzy Name</h4>
-                  <p className="text-xs text-slate-600 mt-1">
-                    Adds a rescanned copy of one citizen's Aadhaar (new file hash, same identity) to another citizen's application in MongoDB, then runs the aggregation pipeline.
-                  </p>
-                </div>
-                <button
-                  disabled={!!running}
-                  onClick={() => runOnce('DOCUMENT_REUSE_FUZZY_NAME', () => onInjectFraudCase('DOCUMENT_REUSE_FUZZY_NAME'))}
-                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
-                >
-                  Inject Reused Doc & Fuzzy Name
-                </button>
-              </div>
-
             </div>
           </div>
         )}
