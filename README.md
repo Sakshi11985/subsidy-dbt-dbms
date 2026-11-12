@@ -9,7 +9,7 @@ The important rules are enforced **inside the database** (constraints, triggers,
 | Transactional data (citizens, land, applications, money) | **PostgreSQL 14+** (3NF, triggers, PL/pgSQL, pg_trgm, pgcrypto, RLS) |
 | Proof-document metadata, verification logs | **MongoDB 6+** (`$jsonSchema` validators, aggregation pipeline) |
 | API | Node.js 18+ / Express (`backend/`) |
-| UI | React 19 + Vite + Tailwind 4 (`frontend/`) |
+| UI | React 19 + Next.js 16 (App Router) + Tailwind 4 (`frontend/`) |
 
 **Team**
 
@@ -205,7 +205,7 @@ database/demo_rls.sql      runnable RLS / privilege demo
 backend/src/               config, db, crypto, documents (MongoDB), services, seed, server
 backend/tests/             integration tests (node:test)
 backend/scripts/           seed + benchmark
-frontend/src/              React app (api.ts, App.tsx, components/)
+frontend/src/              Next.js app (app/layout.tsx, app/page.tsx) + React UI (api.ts, App.tsx, components/)
 docs/                      RESULTS.md, benchmark-results.json
 docker-compose.yml         PostgreSQL 16 + MongoDB 7
 ```

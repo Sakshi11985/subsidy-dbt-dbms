@@ -1,6 +1,6 @@
-// Thin client for the Express API (backend/). In dev, Vite proxies /api to
-// http://localhost:4000 (see vite.config.ts); override with VITE_API_URL.
-const BASE: string = import.meta.env.VITE_API_URL ?? '/api';
+// Thin client for the Express API (backend/). In dev, Next.js forwards /api to
+// http://localhost:4000 (see next.config.mjs); override with NEXT_PUBLIC_API_URL.
+const BASE: string = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 export interface BlockedInfo {
   status: string;     // BLOCKED_BY_TRIGGER | BLOCKED_BY_CONSTRAINT | BLOCKED_BY_LOCK
