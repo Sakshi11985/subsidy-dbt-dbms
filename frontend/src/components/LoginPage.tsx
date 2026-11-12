@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
-import { LogIn, ShieldCheck, Lock } from 'lucide-react';
+import { LogIn, ShieldCheck, Lock, UserPlus } from 'lucide-react';
 import { api, ApiError, setToken } from '../api';
+import { SignupForm } from './SignupForm';
 
 export interface AppUser {
   username: string;
@@ -19,7 +20,8 @@ const ACCOUNTS: { username: string; role: string; desk: string }[] = [
   { username: 'admin', role: 'Administrator', desk: 'All desks, registration, reset demo' },
 ];
 
-export const LoginPage: React.FC<{ onLoggedIn: (user: AppUser) => void }> = ({ onLoggedIn }) => {
+export const LoginPage: React.FC<{ onLoggedIn: (user: AppUser, note?: string | null) => void }> = ({ onLoggedIn }) => {
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +42,16 @@ export const LoginPage: React.FC<{ onLoggedIn: (user: AppUser) => void }> = ({ o
       setLoading(false);
     }
   };
+
+  if (mode === 'signup') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-[#0d341e] via-[#14472b] to-emerald-800 flex items-start sm:items-center justify-center p-4">
+        <div className="w-full max-w-3xl bg-white rounded-3xl shadow-2xl overflow-hidden">
+          <SignupForm onBack={() => setMode('login')} onSignedUp={onLoggedIn} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0d341e] via-[#14472b] to-emerald-800 flex items-center justify-center p-4">
@@ -85,6 +97,11 @@ export const LoginPage: React.FC<{ onLoggedIn: (user: AppUser) => void }> = ({ o
               <LogIn className="w-4 h-4" />{loading ? 'Checking…' : 'Sign in'}
             </button>
           </form>
+
+          <button type="button" onClick={() => setMode('signup')}
+            className="mt-3 w-full py-2.5 border border-emerald-300 text-emerald-800 hover:bg-emerald-50 font-bold text-sm rounded-xl flex items-center justify-center gap-2 cursor-pointer">
+            <UserPlus className="w-4 h-4" />New farmer? Register here
+          </button>
 
           <div className="mt-6">
             <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Demo accounts (click to fill the username)</p>

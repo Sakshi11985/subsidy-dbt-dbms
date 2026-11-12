@@ -78,8 +78,9 @@ export const App: React.FC = () => {
     setDb(null);
   }, []);
 
-  const startSession = useCallback((u: AppUser) => {
+  const startSession = useCallback((u: AppUser, note?: string | null) => {
     setUser(u);
+    if (note) toast.info('Welcome, ' + u.display_name, note);
     setCurrentTab(HOME_TAB[u.app_role]);
     if (u.citizen_id) setActiveCitizenId(u.citizen_id);
   }, []);
@@ -90,7 +91,7 @@ export const App: React.FC = () => {
       toast.info('Session ended', 'Please sign in again.');
     });
     if (!hasToken()) { setAuthChecked(true); return; }
-    api<AppUser>('/me').then(startSession).catch(() => setToken(null)).finally(() => setAuthChecked(true));
+    api<AppUser>('/me').then((u) => startSession(u)).catch(() => setToken(null)).finally(() => setAuthChecked(true));
   }, [logout, startSession]);
 
   useEffect(() => { if (user) refresh(); }, [user, refresh]);

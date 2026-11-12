@@ -26,6 +26,11 @@ app.get('/api/health', h(async () => {
   return { postgres: { ok: true, version: r.version.split(' ').slice(0, 2).join(' '), tables: r.tables }, mongo: mongoStatus };
 }));
 app.post('/api/login', h((req) => login(req.body.username, req.body.password)));
+// new farmer creates their own account (citizen row + login in one transaction), then is logged in
+app.post('/api/signup', h(async (req) => {
+  const r = await svc.signupFarmer(req.body);
+  return { ...r, ...(await login(req.body.username.trim().toLowerCase(), req.body.password)) };
+}));
 
 // ------------------------------------------- everything below needs a login
 app.use('/api', authenticate);

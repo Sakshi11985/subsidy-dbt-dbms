@@ -257,3 +257,20 @@ test('withdraw (DELETE): allowed while submitted, refused by trg_withdraw_guard 
   assert.equal(err.blocked.mechanism, 'trg_withdraw_guard');
   await rejects(() => q("DELETE FROM Applications WHERE application_id='APP-2026-0001'"), /can no longer be withdrawn/);
 });
+
+test('sign-up: citizen + login created together; fraud and duplicate usernames create nothing', async () => {
+  const base = { full_name: 'Test Farmer', aadhaar: '411122233344', phone: '1', annual_income: 50000,
+    bank_ifsc: 'SBIN0001234', bank_account_no: '700000000001', state: 'Karnataka', district: 'Mandya' };
+  const r = await svc.signupFarmer({ ...base, username: 'testfarmer', password: 'secret1' });
+  assert.ok(r.citizen.citizen_id);
+  const u = await q("SELECT * FROM check_login('testfarmer', 'secret1')");
+  assert.equal(u.rows[0].citizen_id, r.citizen.citizen_id);
+  const before = (await q('SELECT COUNT(*)::int AS n FROM Citizens')).rows[0].n;
+  // username taken: refused before anything is written
+  await rejects(() => svc.signupFarmer({ ...base, aadhaar: '411122233355', bank_account_no: '700000000002', username: 'testfarmer', password: 'secret1' }), /already taken/);
+  // reuses Savitri Devi's bank account: the trigger quarantines it, no citizen and no login
+  const err = await rejects(() => svc.signupFarmer({ ...base, aadhaar: '411122233366', bank_ifsc: 'BARB0VARDES', bank_account_no: '982341234509', username: 'fraudster', password: 'secret1' }), /already linked to another farmer/);
+  assert.equal(err.blocked.mechanism, 'trg_screen_new_citizen');
+  assert.equal((await q('SELECT COUNT(*)::int AS n FROM Citizens')).rows[0].n, before);
+  assert.equal((await q("SELECT 1 FROM AppUsers WHERE username='fraudster'")).rowCount, 0);
+});

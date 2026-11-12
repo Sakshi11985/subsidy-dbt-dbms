@@ -66,6 +66,65 @@ export async function registerCitizen(input, actor = 'REGISTRATION_DESK') {
   }
 }
 
+// ------------------------------------------------------- self sign-up
+// A new farmer creates their own login. The Citizens row and the AppUsers row
+// are written in ONE transaction: if the account cannot be created (e.g. the
+// username is taken) the citizen row is rolled back too, so there is never a
+// citizen without a login or a login without a citizen. The same screening
+// trigger as the registration desk runs (trg_screen_new_citizen).
+export async function signupFarmer(input) {
+  const username = String(input.username || '').trim().toLowerCase();
+  if (!/^[a-z0-9_.]{3,40}$/.test(username)) {
+    throw new ApiError(400, 'Username must be 3-40 characters: lowercase letters, digits, _ or .');
+  }
+  if (String(input.password || '').length < 6) throw new ApiError(400, 'Password must be at least 6 characters');
+  if ((await pool.query('SELECT 1 FROM AppUsers WHERE username = $1', [username])).rowCount) {
+    throw new ApiError(409, `Username "${username}" is already taken`);
+  }
+  const actor = `SIGNUP:${username}`;
+  const hmac = aadhaarHmac(input.aadhaar);
+  const params = [input.full_name?.trim(), maskAadhaar(input.aadhaar), hmac, input.phone, Number(input.annual_income),
+    String(input.bank_ifsc).toUpperCase(), String(input.bank_account_no), input.state, input.district];
+  let citizen;
+  try {
+    citizen = await withTx(actor, async (c) => {
+      const r = await c.query(
+        `INSERT INTO Citizens (full_name, aadhaar_masked, aadhaar_hmac, phone, annual_income, bank_ifsc, bank_account_no, state, district)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, params);
+      if (!r.rowCount) return null; // quarantined by the trigger: commit the fraud flag, create no account
+      await c.query('SELECT create_app_user($1, $2, $3, $4, NULL, $5)',
+        [username, input.password, 'citizen', r.rows[0].full_name, r.rows[0].citizen_id]);
+      return r.rows[0];
+    });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    if (err.code === '23505' && err.constraint === 'appusers_pkey') throw new ApiError(409, `Username "${username}" is already taken`);
+    throw await blocked('Citizens', params[1], 'INSERT', actor, err);
+  }
+  if (!citizen) {
+    const flag = await pool.query(
+      `SELECT * FROM FraudFlags
+        WHERE evidence->'attempted'->>'aadhaar_hmac' = $1
+           OR (evidence->'attempted'->>'bank_ifsc' = $2 AND evidence->'attempted'->>'bank_account_no' = $3)
+        ORDER BY detected_at DESC LIMIT 1`, [hmac, params[5], params[6]]);
+    // raise_fraud_flag() merges repeat attempts into one open flag, so describe THIS attempt ourselves
+    const f = flag.rows[0];
+    const what = f?.flag_type === 'DUPLICATE_BANK_ACCOUNT'
+      ? `bank account ${params[5]} / ${params[6]} is already linked to another farmer`
+      : f ? `this Aadhaar is already registered (${f.flag_type})` : 'it failed fraud screening';
+    const message = `Registration refused: ${what}. No account was created; the attempt was sent to Vigilance${f ? ` (flag ${f.flag_id})` : ''}.`;
+    await logBlocked('Citizens', params[1], 'INSERT', actor, { status: 'BLOCKED_BY_TRIGGER', mechanism: 'trg_screen_new_citizen', message });
+    throw new ApiError(409, message, { blocked: { mechanism: 'trg_screen_new_citizen', status: 'BLOCKED_BY_TRIGGER' } });
+  }
+  // optional land holding (its own screening trigger, trg_check_parcel_share)
+  let land = null;
+  if (input.survey_no) {
+    const parcel = await upsertParcel(input);
+    land = { parcel_id: parcel.parcel_id, ...(await addOwnership(parcel.parcel_id, citizen.citizen_id, input.share_fraction ?? 1, citizen.citizen_id)) };
+  }
+  return { citizen, land };
+}
+
 // ------------------------------------------------------------------ land
 export async function upsertParcel(p) {
   const res = await pool.query(
