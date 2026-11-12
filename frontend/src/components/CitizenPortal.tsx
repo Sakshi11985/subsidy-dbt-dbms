@@ -1,6 +1,6 @@
 import React from 'react';
 import { SchemeApplication, Citizen, LandOwnership, Language } from '../types';
-import { Clock, CheckCircle, AlertCircle, FileText, ArrowRight, ShieldCheck, MapPin, Building2, UserCheck, UserPlus } from 'lucide-react';
+import { Clock, CheckCircle, AlertCircle, FileText, ArrowRight, ShieldCheck, MapPin, Building2, UserCheck, UserPlus, Trash2 } from 'lucide-react';
 import { TRANSLATIONS } from '../utils/translations';
 
 interface CitizenPortalProps {
@@ -9,7 +9,8 @@ interface CitizenPortalProps {
   citizens: Citizen[];
   ownerships: (LandOwnership & { parcel_key: string })[];
   onSelectCitizen: (citizenId: string) => void;
-  onOpenRegister: () => void;
+  onOpenRegister?: () => void;           // only given to admins (registration desk)
+  onWithdraw?: (applicationId: string) => void;
   onOpenApplyModal: () => void;
   language: Language;
 }
@@ -21,6 +22,7 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
   ownerships,
   onSelectCitizen,
   onOpenRegister,
+  onWithdraw,
   onOpenApplyModal,
   language,
 }) => {
@@ -62,10 +64,12 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
               {citizens.map((c) => <option key={c.citizen_id} value={c.citizen_id}>{c.full_name} ({c.citizen_id})</option>)}
             </select>
           </label>
-          <button onClick={onOpenRegister}
-            className="px-4 py-2 bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-50 font-bold text-xs rounded-xl flex items-center gap-2 cursor-pointer self-start sm:self-auto">
-            <UserPlus className="w-4 h-4" /><span>Register new farmer</span>
-          </button>
+          {onOpenRegister && (
+            <button onClick={onOpenRegister}
+              className="px-4 py-2 bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-50 font-bold text-xs rounded-xl flex items-center gap-2 cursor-pointer self-start sm:self-auto">
+              <UserPlus className="w-4 h-4" /><span>Register new farmer</span>
+            </button>
+          )}
         </div>
 
         {/* Farmer Profile Badge Card */}
@@ -243,9 +247,18 @@ export const CitizenPortal: React.FC<CitizenPortalProps> = ({
                       ))}
                     </div>
 
-                    <div className="font-mono text-[11px] text-slate-500">
-                      {app.verified_by && <span>Verifier: {app.verified_by} • </span>}
-                      {app.approved_by && <span>Approver: {app.approved_by}</span>}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div className="font-mono text-[11px] text-slate-500">
+                        {app.verified_by && <span>Verifier: {app.verified_by} • </span>}
+                        {app.approved_by && <span>Approver: {app.approved_by}</span>}
+                      </div>
+                      {/* DELETE: allowed only before verification (trg_withdraw_guard in PostgreSQL) */}
+                      {onWithdraw && (app.status === 'submitted' || app.status === 'under_review') && (
+                        <button onClick={() => onWithdraw(app.application_id)}
+                          className="px-3 py-1.5 text-[11px] font-bold rounded-lg border border-rose-300 text-rose-700 bg-white hover:bg-rose-50 flex items-center gap-1 cursor-pointer">
+                          <Trash2 className="w-3.5 h-3.5" />Withdraw application
+                        </button>
+                      )}
                     </div>
                   </div>
 

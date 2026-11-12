@@ -10,7 +10,7 @@
 DROP SCHEMA IF EXISTS public CASCADE;
 CREATE SCHEMA public;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- HMAC-SHA256 (used by tests to cross-check the API's hashing)
+CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- bcrypt login password hashes; HMAC-SHA256 (tests cross-check the API's hashing)
 CREATE EXTENSION IF NOT EXISTS pg_trgm;    -- trigram similarity() for fuzzy name matching
 
 -- -------------------------------------------------------------------------
@@ -699,3 +699,75 @@ CREATE POLICY admin_all_apps      ON Applications  FOR ALL TO admin_role USING (
 CREATE POLICY admin_all_land      ON LandOwnership FOR ALL TO admin_role USING (true) WITH CHECK (true);
 CREATE POLICY admin_read_money    ON Disbursals    FOR SELECT TO admin_role USING (true);
 CREATE POLICY admin_insert_money  ON Disbursals    FOR INSERT TO admin_role WITH CHECK (true);
+
+-- -------------------------------------------------------------------------
+-- 12. Withdrawing an application (DML: DELETE)
+--     A farmer may withdraw (DELETE) an application only while nobody has
+--     acted on it yet. Once it is verified/approved/paid the row is evidence
+--     and must stay; the trigger refuses the DELETE, whoever sends it.
+--     PaymentAttempts/Disbursals also reference the row (FK, no CASCADE), so
+--     a paid application could never be deleted anyway. The audit trigger
+--     (trg_audit_applications) keeps the deleted row in AuditLog.old_state.
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION guard_application_withdraw() RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.status NOT IN ('submitted', 'under_review') THEN
+        RAISE EXCEPTION 'Application % is already % and can no longer be withdrawn', OLD.application_id, OLD.status
+            USING ERRCODE = 'check_violation', HINT = 'trg_withdraw_guard';
+    END IF;
+    RETURN OLD;   -- returning OLD lets the DELETE go ahead
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_withdraw_guard
+BEFORE DELETE ON Applications
+FOR EACH ROW EXECUTE FUNCTION guard_application_withdraw();
+
+GRANT DELETE ON Applications TO admin_role;
+
+-- -------------------------------------------------------------------------
+-- 13. Application login accounts (authentication + role-based access)
+--     Passwords are never stored: only a bcrypt hash made by pgcrypto
+--     (crypt(password, gen_salt('bf'))). Each bcrypt hash has its own random
+--     salt, so two users with the same password get different hashes.
+--     app_role decides which desks and API actions a user may use.
+-- -------------------------------------------------------------------------
+CREATE TABLE AppUsers (
+    username      VARCHAR(40) PRIMARY KEY CHECK (username ~ '^[a-z0-9_.]{3,40}$'),
+    password_hash TEXT        NOT NULL CHECK (password_hash LIKE '$2a$%'),   -- must be a bcrypt hash
+    app_role      VARCHAR(20) NOT NULL CHECK (app_role IN ('citizen', 'verifier', 'approver', 'vigilance', 'admin')),
+    display_name  VARCHAR(120) NOT NULL,
+    officer_id    VARCHAR(40) REFERENCES Officers(officer_id),
+    citizen_id    VARCHAR(20) REFERENCES Citizens(citizen_id),
+    is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_login_at TIMESTAMPTZ,
+    -- a citizen account belongs to exactly one farmer; officer accounts act as one officer
+    CONSTRAINT chk_citizen_has_citizen  CHECK ((app_role = 'citizen') = (citizen_id IS NOT NULL)),
+    CONSTRAINT chk_officer_has_officer  CHECK (app_role NOT IN ('verifier', 'approver') OR officer_id IS NOT NULL)
+);
+
+-- Create an account. The plain password only exists inside this call.
+CREATE OR REPLACE FUNCTION create_app_user(
+    p_username TEXT, p_password TEXT, p_role TEXT, p_display_name TEXT,
+    p_officer_id TEXT DEFAULT NULL, p_citizen_id TEXT DEFAULT NULL
+) RETURNS VARCHAR AS $$
+BEGIN
+    IF length(p_password) < 6 THEN
+        RAISE EXCEPTION 'Password must be at least 6 characters' USING ERRCODE = 'check_violation';
+    END IF;
+    INSERT INTO AppUsers (username, password_hash, app_role, display_name, officer_id, citizen_id)
+    VALUES (lower(p_username), crypt(p_password, gen_salt('bf', 8)), p_role, p_display_name, p_officer_id, p_citizen_id);
+    RETURN lower(p_username);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Check a login. crypt(typed_password, stored_hash) re-hashes the typed
+-- password with the salt stored inside the hash; equal hashes = right password.
+CREATE OR REPLACE FUNCTION check_login(p_username TEXT, p_password TEXT)
+RETURNS TABLE (username VARCHAR, app_role VARCHAR, display_name VARCHAR, officer_id VARCHAR, citizen_id VARCHAR) AS $$
+    UPDATE AppUsers u SET last_login_at = now()
+     WHERE u.username = lower(p_username) AND u.is_active
+       AND u.password_hash = crypt(p_password, u.password_hash)
+    RETURNING u.username, u.app_role, u.display_name, u.officer_id, u.citizen_id;
+$$ LANGUAGE sql;

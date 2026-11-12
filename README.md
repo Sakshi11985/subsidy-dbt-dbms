@@ -52,12 +52,23 @@ npm install
 npm run dev                   # http://localhost:5173
 ```
 
-The black strip under the header shows whether PostgreSQL and MongoDB are live. **Reset demo database** rebuilds both from `database/schema.sql` and the seed story at any time.
+Open http://localhost:5173 and sign in. The seed creates one account per role:
+
+| Username | Password | Role | Desks it can open |
+|---|---|---|---|
+| `farmer` | `farmer@123` | Citizen / Farmer (CIT-1001) | Citizen desk: apply, track, **withdraw** own applications |
+| `verifier` | `verifier@123` | Verifying Agent (OFFICER_VERIFIER_10) | Verification desk |
+| `approver` | `approver@123` | Approval & Payment (OFFICER_APPROVER_02) | Approval & Payment desk, Race Condition Lab |
+| `vigilance` | `vigilance@123` | Vigilance Officer | Fraud flags, scans, freeze, audit trail |
+| `admin` | `admin@123` | Administrator | Every desk, farmer registration, reset, may act as any officer |
+
+Passwords are stored only as bcrypt hashes (`AppUsers.password_hash`, made by pgcrypto `crypt()`); these are demo accounts, change them for anything real.
+The black strip under the header shows whether PostgreSQL and MongoDB are live, who is signed in, and (for admin) **Reset demo database**, which rebuilds both databases from `database/schema.sql` and the seed story.
 
 ### Tests and experiments
 ```bash
 cd backend
-npm test                      # 24 integration tests against a scratch DB (subsidy_test)
+npm test                      # 27 integration tests against a scratch DB (subsidy_test)
 npm run benchmark             # 50k synthetic farmers; writes docs/RESULTS.md + docs/benchmark-results.json
 psql -U postgres -d subsidy_dbt -f ../database/demo_rls.sql   # Row-Level Security demo
 ```
@@ -145,6 +156,8 @@ Also: `FraudFlags`, `AuditLog`, and `RaceDemoLedger` (a teaching table with no c
 | Fuzzy matching | `pg_trgm` `similarity()` / `%` | Seed flag for "Basavaraaj Gowda" | `seed story…` |
 | Keyed hashing (Fix 5) | `aadhaar_hmac` (key only in API env; matches `pgcrypto.hmac()`) | Citizen card | `Aadhaar keyed hash…` |
 | Roles, privileges, RLS | `citizen_role`, `agent_role`, `admin_role`, policies, column `GRANT` | `database/demo_rls.sql` | `RLS…`, `column privilege…` |
+| Authentication + role-based access | `AppUsers` (bcrypt via pgcrypto), `check_login()`, `create_app_user()`; API checks the role on every route (`backend/src/auth.js`) | Login page; desks shown per role | `login: passwords…`, `login token…` |
+| DML DELETE (withdraw) | `trg_withdraw_guard` (BEFORE DELETE), audit keeps the deleted row | Citizen desk → *Withdraw application* | `withdraw (DELETE)…` |
 | MongoDB validation + aggregation (Fix 6, 10) | `backend/src/documents.js` | Vigilance → "Reused Doc" | `MongoDB: aggregation…` |
 
 ### Design notes worth defending in the viva
@@ -172,6 +185,7 @@ Your numbers will differ by machine. Re-run `npm run benchmark` and the DBMS Int
 
 ## Demo walkthrough (about 5 minutes)
 
+0. Sign in as `farmer`: only the Citizen desk is shown. Apply for a scheme, then press *Withdraw application* (a SQL `DELETE`). Try withdrawing the paid PM-Kisan application: the button is not offered, and a direct `DELETE` is refused by `trg_withdraw_guard`. Log out, sign in as `admin` for the steps below (admin can pick any officer, so the database triggers are what refuse).
 1. **Citizen / Farmer** → *Register new farmer* → *Register*. Then *Apply for New DBT Scheme* → *EXECUTE check_citizen_eligibility()* → submit.
 2. Try the presets in *Register new farmer*. "Reuse someone's bank account" is quarantined by `trg_screen_new_citizen`. "Claim an already-full parcel" is quarantined by `trg_check_parcel_share`.
 3. **Verifying Agent** → *Start Field Review*. Switch the officer to `OFFICER_APPROVER_02` and press *Certify*: `trg_separation_of_duties` refuses because that officer lacks `can_verify`. Switch back to `OFFICER_VERIFIER_10` and certify.
@@ -186,17 +200,19 @@ Your numbers will differ by machine. Re-run `npm run benchmark` and the DBMS Int
 
 | Method | Path | Does |
 |---|---|---|
-| GET | `/api/health`, `/api/state` | status; full read model for the UI |
+| POST | `/api/login` | `{ username, password }` → signed token (all other routes need `Authorization: Bearer <token>`) |
+| GET | `/api/health`, `/api/state`, `/api/me` | status; read model for the UI (a citizen gets only their own rows); current user |
 | POST | `/api/citizens`, `/api/parcels`, `/api/ownership` | register (through screening triggers) |
 | GET | `/api/eligibility?citizen_id&scheme_id&parcel_id` | calls `check_citizen_eligibility()` |
 | POST | `/api/applications` | submit (PostgreSQL) + document set (MongoDB) |
+| DELETE | `/api/applications/:id` | withdraw: `DELETE` row (only `submitted`/`under_review`) + delete its MongoDB document set |
 | POST | `/api/applications/:id/status` | `under_review`, `verified`, `rejected` |
 | POST | `/api/applications/:id/approve`, `/release-next`, `/disburse` | approval and two-phase payment |
 | POST | `/api/race` | `{ application_id, workers, mode: safe \| no_lock \| no_defence }` |
 | POST | `/api/fraud/inject`, `/api/fraud/scan`, `/api/fraud/:id/resolve`, `/api/citizens/:id/freeze` | vigilance |
 | POST | `/api/reset` | rebuild schema + seed |
 
-Refusals come back as HTTP 409 with `blocked: { mechanism, code, status }`, naming the constraint or trigger that refused.
+Role checks: 401 = not signed in, 403 = your role may not do this (e.g. a verifier calling approve, or an approver sending another officer's ID). Refusals come back as HTTP 409 with `blocked: { mechanism, code, status }`, naming the constraint or trigger that refused.
 
 ## Project structure
 ```

@@ -191,3 +191,9 @@ export function findReusedIdentityDocuments() {
 export function findReusedFilesByBytes() {
   return aggregateOrFallback(REUSED_FILE_BYTES_PIPELINE, (rows) => groupInJs(rows, (d) => d.file_sha256));
 }
+
+/** The application was withdrawn in PostgreSQL: remove its document set (NoSQL delete). */
+export async function deleteUpload(applicationId) {
+  const res = await mongo().collection('document_uploads').deleteOne({ application_id: applicationId });
+  return res.deletedCount;
+}

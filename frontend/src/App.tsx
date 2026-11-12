@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { DbState, FraudFlag, Language, RaceMode, RaceResult, Scheme, SchemeApplication } from './types';
-import { api, ApiError } from './api';
+import { api, ApiError, setToken, hasToken, setUnauthorizedHandler } from './api';
 import { toast } from './utils/toast';
 
 import { TopTicker } from './components/TopTicker';
@@ -15,13 +15,29 @@ import { ApplyModal } from './components/ApplyModal';
 import { RegisterModal } from './components/RegisterModal';
 import { Footer } from './components/Footer';
 import { Toaster } from './components/Toaster';
+import { LoginPage, AppUser } from './components/LoginPage';
+
+// Which desks (tabs) each login role may open. 'schemes' is the public scheme list.
+const TABS_BY_ROLE: Record<AppUser['app_role'], string[]> = {
+  citizen: ['citizen', 'schemes'],
+  verifier: ['verifier', 'schemes'],
+  approver: ['disbursal', 'schemes'],
+  vigilance: ['fraud', 'schemes'],
+  admin: ['citizen', 'schemes', 'verifier', 'disbursal', 'fraud'],
+};
+const HOME_TAB: Record<AppUser['app_role'], string> = {
+  citizen: 'citizen', verifier: 'verifier', approver: 'disbursal', vigilance: 'fraud', admin: 'citizen',
+};
+const ROLE_LABEL: Record<AppUser['app_role'], string> = {
+  citizen: 'Citizen / Farmer', verifier: 'Verifying Agent', approver: 'Approval & Payment', vigilance: 'Vigilance', admin: 'Administrator',
+};
 
 export type ActionResult = { success: boolean; error?: string };
 
 /** Turn an API refusal into a toast naming the database mechanism that refused it. */
 function reportError(err: unknown, fallbackTitle = 'Request failed'): ActionResult {
   if (err instanceof ApiError) {
-    const title = err.blocked ? `Blocked by ${err.blocked.mechanism}` : fallbackTitle;
+    const title = err.blocked ? `Blocked by ${err.blocked.mechanism}` : err.status === 403 ? 'Not allowed for your login' : fallbackTitle;
     toast.error(title, err.message);
     return { success: false, error: err.message };
   }
@@ -30,6 +46,8 @@ function reportError(err: unknown, fallbackTitle = 'Request failed'): ActionResu
 }
 
 export const App: React.FC = () => {
+  const [user, setUser] = useState<AppUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [currentTab, setCurrentTab] = useState<string>('citizen');
   const [language, setLanguage] = useState<Language>('en');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -53,7 +71,36 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  // ---------------------------------------------------------- login session
+  const logout = useCallback(() => {
+    setToken(null);
+    setUser(null);
+    setDb(null);
+  }, []);
+
+  const startSession = useCallback((u: AppUser) => {
+    setUser(u);
+    setCurrentTab(HOME_TAB[u.app_role]);
+    if (u.citizen_id) setActiveCitizenId(u.citizen_id);
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      logout();
+      toast.info('Session ended', 'Please sign in again.');
+    });
+    if (!hasToken()) { setAuthChecked(true); return; }
+    api<AppUser>('/me').then(startSession).catch(() => setToken(null)).finally(() => setAuthChecked(true));
+  }, [logout, startSession]);
+
+  useEffect(() => { if (user) refresh(); }, [user, refresh]);
+
+  /** Switch desk, but only to desks this role may open. */
+  const goTo = useCallback((tab: string) => {
+    if (!user) return;
+    if (TABS_BY_ROLE[user.app_role].includes(tab)) { setCurrentTab(tab); return; }
+    toast.info('Not available for your role', `${ROLE_LABEL[user.app_role]} cannot open this desk. Sign in with the right account.`);
+  }, [user]);
 
   /** Run a mutating API call, then reload state from the database. */
   const run = useCallback(async <T,>(fn: () => Promise<T>, okTitle?: (r: T) => string | null, errTitle?: string) => {
@@ -113,10 +160,20 @@ export const App: React.FC = () => {
     run(() => api(`/citizens/${citizenId}/freeze`, { frozen, officer_id: 'CHIEF_VIGILANCE_OFFICER_01' }),
       () => `${citizenId} ${frozen ? 'frozen' : 'unfrozen'}`);
 
+  // DML DELETE: withdraw an application (the database refuses once it is verified)
+  const handleWithdraw = (appId: string) => {
+    if (!window.confirm(`Withdraw ${appId}? This DELETEs the application (only possible before verification).`)) return;
+    run(() => api(`/applications/${appId}`, undefined, 'DELETE'), () => `${appId} withdrawn (row deleted, copy kept in AuditLog)`);
+  };
+
   const handleReset = () =>
     run(() => api('/reset', {}), () => 'Demo database rebuilt from database/schema.sql + seed');
 
   const handleOpenApplyModalWithScheme = (scheme: Scheme) => {
+    if (user && user.app_role !== 'citizen' && user.app_role !== 'admin') {
+      toast.info('Only farmers can apply', 'Sign in as a Citizen / Farmer to apply for a scheme.');
+      return;
+    }
     setSelectedSchemeForModal(scheme);
     setIsApplyModalOpen(true);
   };
@@ -127,6 +184,11 @@ export const App: React.FC = () => {
   );
 
   // ------------------------------------------------------------ render
+  if (!user) {
+    if (!authChecked) return <div className="min-h-screen bg-[#14472b]" />;
+    return (<><LoginPage onLoggedIn={startSession} /><Toaster /></>);
+  }
+
   if (!db) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
@@ -152,7 +214,7 @@ export const App: React.FC = () => {
 
       <Header
         currentTab={currentTab}
-        setCurrentTab={setCurrentTab}
+        setCurrentTab={goTo}
         language={language}
         setLanguage={setLanguage}
         searchQuery={searchQuery}
@@ -169,8 +231,8 @@ export const App: React.FC = () => {
             ['verifier', 'Verifying Agent'],
             ['disbursal', 'Approval & Payment'],
             ['fraud', `Vigilance (${fraudFlags.filter(f => !f.resolved).length})`],
-          ].map(([id, label]) => (
-            <button key={id} onClick={() => setCurrentTab(id)} aria-current={currentTab === id ? 'page' : undefined}
+          ].filter(([id]) => TABS_BY_ROLE[user.app_role].includes(id)).map(([id, label]) => (
+            <button key={id} onClick={() => goTo(id)} aria-current={currentTab === id ? 'page' : undefined}
               className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                 currentTab === id ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
               {label}
@@ -188,9 +250,19 @@ export const App: React.FC = () => {
             MongoDB: {db.meta.mongo.connected ? 'live' : `offline (${db.meta.mongo.error ?? 'not connected'})`}
           </span>
           <span className="text-slate-500">synced {db.meta.generated_at}{busy ? ' · working…' : ''}</span>
-          <button onClick={handleReset} disabled={busy}
-            className="ml-auto px-2 py-0.5 rounded border border-slate-600 hover:bg-slate-800 cursor-pointer disabled:opacity-50">
-            Reset demo database
+          <span className="ml-auto text-slate-200">
+            Signed in: <strong className="text-emerald-300">{user.display_name}</strong>
+            {' '}({ROLE_LABEL[user.app_role]}{user.officer_id ? ` · ${user.officer_id}` : ''}{user.citizen_id ? ` · ${user.citizen_id}` : ''})
+          </span>
+          {user.app_role === 'admin' && (
+            <button onClick={handleReset} disabled={busy}
+              className="px-2 py-0.5 rounded border border-slate-600 hover:bg-slate-800 cursor-pointer disabled:opacity-50">
+              Reset demo database
+            </button>
+          )}
+          <button onClick={logout}
+            className="px-2 py-0.5 rounded border border-rose-400/60 text-rose-200 hover:bg-rose-900/40 cursor-pointer">
+            Log out
           </button>
         </div>
       </div>
@@ -198,7 +270,7 @@ export const App: React.FC = () => {
       {currentTab === 'citizen' && (
         <Hero
           language={language}
-          onSelectAction={(tab) => setCurrentTab(tab)}
+          onSelectAction={goTo}
           onOpenApplyModal={() => handleOpenApplyModalWithScheme(schemes[0])}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
@@ -220,7 +292,8 @@ export const App: React.FC = () => {
               citizens={citizens}
               ownerships={ownerships.filter(o => o.citizen_id === activeCitizen.citizen_id)}
               onSelectCitizen={setActiveCitizenId}
-              onOpenRegister={() => setIsRegisterOpen(true)}
+              onOpenRegister={user.app_role === 'admin' ? () => setIsRegisterOpen(true) : undefined}
+              onWithdraw={handleWithdraw}
               onOpenApplyModal={() => handleOpenApplyModalWithScheme(schemes[0])}
               language={language}
             />

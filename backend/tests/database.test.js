@@ -211,3 +211,49 @@ test('agent_role can start a review, and the change is still audited (SECURITY D
     await c.query('ROLLBACK');
   } finally { c.release(); }
 });
+
+test('login: passwords are stored only as bcrypt hashes and checked inside PostgreSQL', async () => {
+  const { rows } = await q('SELECT username, password_hash FROM AppUsers');
+  assert.ok(rows.length >= 5);
+  for (const r of rows) {
+    assert.match(r.password_hash, /^\$2a\$/);
+    assert.ok(!r.password_hash.includes(`${r.username}@123`));
+  }
+  const ok = await q("SELECT * FROM check_login('verifier', 'verifier@123')");
+  assert.equal(ok.rows[0].app_role, 'verifier');
+  assert.equal(ok.rows[0].officer_id, 'OFFICER_VERIFIER_10');
+  assert.equal((await q("SELECT * FROM check_login('verifier', 'wrong')")).rowCount, 0);
+  // a plain-text password can never be stored (CHECK requires a bcrypt hash)
+  await rejects(() => q("INSERT INTO AppUsers (username, password_hash, app_role, display_name) VALUES ('x_user','secret','admin','X')"), /check/i);
+  // a citizen account must point at a citizen
+  await rejects(() => q("SELECT create_app_user('lonely', 'abcdef', 'citizen', 'No Citizen')"), /chk_citizen_has_citizen/);
+});
+
+test('login token: signed, and a tampered role is rejected', async () => {
+  const auth = await import('../src/auth.js');
+  const { token, user } = await auth.login('farmer', 'farmer@123');
+  assert.equal(user.citizen_id, 'CIT-1001');
+  assert.equal(auth.verifyToken(token).app_role, 'citizen');
+  const [p, s] = token.split('.');
+  const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(p, 'base64url')), app_role: 'admin' })).toString('base64url');
+  assert.equal(auth.verifyToken(`${forged}.${s}`), null);
+  await rejects(() => auth.login('farmer', 'nope'), /Wrong username or password/);
+});
+
+test('withdraw (DELETE): allowed while submitted, refused by trg_withdraw_guard after verification, audited', async () => {
+  const { application: a } = await svc.submitApplication({ citizen_id: 'CIT-1001', scheme_id: 'SCH-05', parcel_id: 'PARCEL-102' }, 'CIT-1001');
+  const r = await svc.withdrawApplication(a.application_id, 'CIT-1001', { citizenId: 'CIT-1001' });
+  assert.equal(r.withdrawn.application_id, a.application_id);
+  assert.equal((await q('SELECT 1 FROM Applications WHERE application_id=$1', [a.application_id])).rowCount, 0);
+  const audit = await q("SELECT old_state->>'status' AS s FROM AuditLog WHERE entity_id=$1 AND action='DELETE' AND status='SUCCESS'", [a.application_id]);
+  assert.equal(audit.rows[0].s, 'submitted');
+  if (db.mongoStatus.connected) {
+    assert.equal(await db.mongo().collection('document_uploads').countDocuments({ application_id: a.application_id }), 0);
+  }
+  // someone else's application
+  await rejects(() => svc.withdrawApplication('APP-2026-0005', 'CIT-1001', { citizenId: 'CIT-1001' }), /only withdraw your own/);
+  // already verified: the database itself refuses, even for a direct SQL DELETE
+  const err = await rejects(() => svc.withdrawApplication('APP-2026-0003', 'ADMIN'), /can no longer be withdrawn/);
+  assert.equal(err.blocked.mechanism, 'trg_withdraw_guard');
+  await rejects(() => q("DELETE FROM Applications WHERE application_id='APP-2026-0001'"), /can no longer be withdrawn/);
+});

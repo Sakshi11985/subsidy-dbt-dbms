@@ -116,6 +116,18 @@ export async function resetDatabase({ quiet = false } = {}) {
   await svc.addOwnership(kaGhost.parcel_id, basavaraaj.citizen_id, 0.3, 'SEED');
   say('citizens, parcels, ownership loaded');
 
+  // login accounts, one per role (password = username + "@123"; stored only as a bcrypt hash)
+  for (const [username, role, name, officer, citizen] of [
+    ['farmer', 'citizen', rajendra.full_name, null, rajendra.citizen_id],
+    ['verifier', 'verifier', 'R. Shankar (Revenue Inspector)', 'OFFICER_VERIFIER_10', null],
+    ['approver', 'approver', 'Anil Mehta (Deputy Director)', 'OFFICER_APPROVER_02', null],
+    ['vigilance', 'vigilance', 'Chief Vigilance Officer', null, null],
+    ['admin', 'admin', 'System Administrator', null, null],
+  ]) {
+    await pool.query('SELECT create_app_user($1,$2,$3,$4,$5,$6)', [username, `${username}@123`, role, name, officer, citizen]);
+  }
+  say('login accounts created (farmer, verifier, approver, vigilance, admin)');
+
   // fraudulent registrations -> quarantined by trg_screen_new_citizen
   await svc.registerCitizen({ ...CITIZENS[2], full_name: 'Suresh Kumarr', aadhaar: '456789019999', bank_ifsc: savitri.bank_ifsc, bank_account_no: savitri.bank_account_no }, 'SEED');
   await svc.registerCitizen({ ...CITIZENS[3], full_name: 'Basavaraju Gowda', phone: '+91 90080 55511', bank_account_no: '1890201007777' }, 'SEED');

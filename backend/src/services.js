@@ -196,6 +196,36 @@ export async function submitApplication({ citizen_id, scheme_id, parcel_id, cycl
   return { application: app, eligibility: elig, warning };
 }
 
+// DML DELETE: a farmer withdraws an application. The row is deleted only if
+// trg_withdraw_guard agrees (status still submitted/under_review); the audit
+// trigger keeps a copy of the deleted row in AuditLog.
+export async function withdrawApplication(appId, actor, { citizenId } = {}) {
+  let row;
+  try {
+    row = await withTx(actor, async (c) => {
+      const r = await c.query('SELECT citizen_id FROM Applications WHERE application_id = $1 FOR UPDATE', [appId]);
+      if (!r.rowCount) throw new ApiError(404, `Application ${appId} not found`);
+      if (citizenId && r.rows[0].citizen_id !== citizenId) {
+        throw new ApiError(403, `You can only withdraw your own applications (${appId} belongs to ${r.rows[0].citizen_id})`);
+      }
+      const d = await c.query('DELETE FROM Applications WHERE application_id = $1 RETURNING *', [appId]);
+      return d.rows[0];
+    });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw await blocked('Applications', appId, 'DELETE', actor, err);
+  }
+  // PostgreSQL has committed the DELETE; now remove the MongoDB document set.
+  let warning = null;
+  try {
+    await docs.deleteUpload(appId);
+    await docs.logVerification(appId, actor, 'WITHDRAWN', 'Application withdrawn by the applicant');
+  } catch (err) {
+    warning = `Application withdrawn, but its MongoDB documents could not be removed: ${err.message}`;
+  }
+  return { withdrawn: row, warning };
+}
+
 export async function updateStatus(appId, newStatus, officerId, notes) {
   const allowed = ['under_review', 'verified', 'rejected'];
   if (!allowed.includes(newStatus)) throw new ApiError(400, `Verifier desk can only set ${allowed.join(', ')}`);
@@ -559,6 +589,9 @@ function summarize(entity, action, oldS, newS, status) {
     const diff = Object.keys(newS).filter((k) => !skip.has(k) && JSON.stringify(oldS[k]) !== JSON.stringify(newS[k]))
       .map((k) => `${k}: ${show(oldS[k])} → ${show(newS[k])}`);
     return diff.join(', ') || 'no field change';
+  }
+  if (action === 'DELETE' && oldS) {
+    return `DELETED row (kept here as evidence): ${['citizen_id', 'scheme_id', 'status'].map((k) => `${k}: ${oldS[k]}`).join(', ')}`;
   }
   if (!newS) return '';
   const pick = {
