@@ -53,7 +53,7 @@ const verificationLogsSchema = {
     properties: {
       application_id: { bsonType: 'string' },
       agent_id: { bsonType: 'string' },
-      action: { enum: ['reviewed', 'verified', 'approved', 'rejected', 'document_added'] },
+      action: { enum: ['reviewed', 'verified', 'approved', 'rejected', 'document_added', 'withdrawn'] },
       timestamp: { bsonType: 'date' },
       notes: { bsonType: ['string', 'null'] },
     },

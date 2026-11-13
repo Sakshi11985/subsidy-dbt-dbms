@@ -278,7 +278,7 @@ export async function withdrawApplication(appId, actor, { citizenId } = {}) {
   let warning = null;
   try {
     await docs.deleteUpload(appId);
-    await docs.logVerification(appId, actor, 'WITHDRAWN', 'Application withdrawn by the applicant');
+    await docs.logVerification(appId, actor, 'withdrawn', 'Application withdrawn by the applicant');
   } catch (err) {
     warning = `Application withdrawn, but its MongoDB documents could not be removed: ${err.message}`;
   }
